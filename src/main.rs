@@ -9,16 +9,23 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use analysis::AudioFeatures;
-use audio::{AudioMessage, AudioWorker};
+use audio::{AudioMessage, AudioWorker, InputMode};
 use pixels::wgpu::{Color, CompositeAlphaMode};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
 use render::{HEIGHT, WIDTH, clear_frame, colour_from_audio};
 use simulation::BoidSimulation;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
+
+#[derive(Debug, PartialEq, Eq)]
+struct LaunchOptions {
+    demo_mode: bool,
+    input_mode: InputMode,
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -34,11 +41,11 @@ struct App {
 }
 
 impl App {
-    fn new(demo_mode: bool) -> Self {
+    fn new(demo_mode: bool, input_mode: InputMode) -> Self {
         let (audio_worker, audio_receiver) = if demo_mode {
             (None, None)
         } else {
-            let (worker, receiver) = AudioWorker::spawn();
+            let (worker, receiver) = AudioWorker::spawn(input_mode);
             (Some(worker), Some(receiver))
         };
 
@@ -94,12 +101,18 @@ impl App {
 
         let mut newest_features = None;
         let mut newest_error = None;
+        let mut newest_switch_error = None;
 
         for message in receiver.try_iter() {
             match message {
                 AudioMessage::Features(features) => newest_features = Some(features),
                 AudioMessage::Failed(error) => newest_error = Some(error),
+                AudioMessage::SwitchFailed(error) => newest_switch_error = Some(error),
             }
+        }
+
+        if let Some(error) = newest_switch_error {
+            eprintln!("{error}");
         }
 
         if let Some(error) = newest_error {
@@ -141,6 +154,14 @@ impl App {
     fn shutdown_audio(&mut self) {
         if let Some(worker) = self.audio_worker.as_mut() {
             worker.shutdown();
+        }
+    }
+
+    fn toggle_audio_input(&self) {
+        if let Some(worker) = &self.audio_worker
+            && let Err(error) = worker.toggle_input()
+        {
+            eprintln!("Could not switch audio input: {error}");
         }
     }
 }
@@ -226,6 +247,13 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                 }
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyI) =>
+            {
+                self.toggle_audio_input();
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     eprintln!("Could not draw the next frame: {error}");
@@ -243,12 +271,95 @@ impl ApplicationHandler for App {
     }
 }
 
+fn parse_launch_options(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<LaunchOptions, String> {
+    let mut options = LaunchOptions {
+        demo_mode: false,
+        input_mode: InputMode::Loopback,
+    };
+    let mut arguments = arguments.into_iter();
+
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--demo" => options.demo_mode = true,
+            "--input" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--input requires either 'loopback' or 'mic'".to_owned())?;
+                options.input_mode = parse_input_mode(&value)?;
+            }
+            _ => {
+                if let Some(value) = argument.strip_prefix("--input=") {
+                    options.input_mode = parse_input_mode(value)?;
+                } else {
+                    return Err(format!(
+                        "unknown argument '{argument}'; use --input loopback, --input mic, or --demo"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(options)
+}
+
+fn parse_input_mode(value: &str) -> Result<InputMode, String> {
+    match value {
+        "loopback" => Ok(InputMode::Loopback),
+        "mic" => Ok(InputMode::Microphone),
+        _ => Err(format!(
+            "unknown input '{value}'; expected 'loopback' or 'mic'"
+        )),
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let demo_mode = std::env::args()
-        .skip(1)
-        .any(|argument| argument == "--demo");
+    let options = parse_launch_options(std::env::args().skip(1))?;
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(demo_mode);
+    let mut app = App::new(options.demo_mode, options.input_mode);
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn loopback_is_the_default_input() {
+        assert_eq!(
+            parse_launch_options(Vec::new()).unwrap(),
+            LaunchOptions {
+                demo_mode: false,
+                input_mode: InputMode::Loopback,
+            }
+        );
+    }
+
+    #[test]
+    fn microphone_can_be_selected_at_launch() {
+        assert_eq!(
+            parse_launch_options(arguments(&["--input", "mic"]))
+                .unwrap()
+                .input_mode,
+            InputMode::Microphone
+        );
+        assert_eq!(
+            parse_launch_options(arguments(&["--input=mic"]))
+                .unwrap()
+                .input_mode,
+            InputMode::Microphone
+        );
+    }
+
+    #[test]
+    fn invalid_input_is_rejected() {
+        assert!(parse_launch_options(arguments(&["--input", "file"])).is_err());
+        assert!(parse_launch_options(arguments(&["--input"])).is_err());
+    }
 }
