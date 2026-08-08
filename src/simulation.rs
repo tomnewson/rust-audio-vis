@@ -129,19 +129,20 @@ impl SimulationInputs {
         let mid = finite_unit(features.bands.mid);
         let high = finite_unit(features.bands.high);
         let rhythmic_irregularity = finite_unit(features.rhythmic_irregularity);
+        let onset_rate_position = finite_unit(features.onset_rate_hz / 8.0);
         let tempo_position = features
             .bpm
             .filter(|bpm| bpm.is_finite())
             .map(|bpm| ((bpm - 55.0) / (200.0 - 55.0)).clamp(0.0, 1.0))
             .unwrap_or(0.0)
             * finite_unit(features.tempo_confidence);
+        let onset_pace = finite_unit((features.onset_rate_hz - 1.0) / 5.0) * 0.9;
+        let pace = tempo_position.max(onset_pace);
 
         Self {
             population_level: loudness_position(features.rms),
-            max_speed: 30.0 + pitch * 120.0,
-            max_force: 35.0
-                + (features.onset_rate_hz / 8.0).clamp(0.0, 1.0) * 45.0
-                + tempo_position * 10.0,
+            max_speed: 30.0 + pitch * 120.0 + pace * 220.0,
+            max_force: 35.0 + onset_rate_position * 45.0 + pace * 110.0,
             separation_weight: 1.6 * (1.0 + high * 0.8) * (1.0 + chaos * 0.8),
             alignment_weight: 1.0
                 * (1.0 + mid * 0.8)
@@ -519,6 +520,27 @@ mod tests {
             SimulationInputs::from_audio(&loud_features()).target_population(),
             MAX_BOIDS
         );
+    }
+
+    #[test]
+    fn fast_paced_audio_has_a_much_higher_speed_limit() {
+        let slow = AudioFeatures {
+            dominant_hz: Some(440.0),
+            onset_rate_hz: 0.5,
+            bpm: Some(60.0),
+            tempo_confidence: 1.0,
+            ..AudioFeatures::default()
+        };
+        let fast = AudioFeatures {
+            onset_rate_hz: 6.0,
+            bpm: Some(190.0),
+            ..slow
+        };
+
+        let slow_inputs = SimulationInputs::from_audio(&slow);
+        let fast_inputs = SimulationInputs::from_audio(&fast);
+        assert!(fast_inputs.max_speed > slow_inputs.max_speed * 2.5);
+        assert!(fast_inputs.max_force > slow_inputs.max_force * 2.5);
     }
 
     #[test]
