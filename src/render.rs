@@ -2,7 +2,7 @@ pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 480;
 
 const BACKGROUND: [u8; 4] = [0, 0, 0, 0];
-const QUIET_COLOUR: [u8; 4] = [96, 100, 112, 255];
+const QUIET_COLOUR: [u8; 4] = [0, 0, 0, 255];
 const MIN_DBFS: f32 = -50.0;
 const MAX_DBFS: f32 = -10.0;
 const MIN_FREQUENCY_HZ: f32 = 80.0;
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn silence_has_a_muted_colour() {
+    fn silence_uses_black() {
         assert_eq!(colour_from_audio(0.0, None), QUIET_COLOUR);
     }
 
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_frequency_has_a_muted_colour() {
+    fn invalid_frequency_uses_black() {
         assert_eq!(colour_from_audio(0.1, Some(f32::NAN)), QUIET_COLOUR);
         assert_eq!(colour_from_audio(0.1, Some(f32::INFINITY)), QUIET_COLOUR);
         assert_eq!(colour_from_audio(0.1, Some(-440.0)), QUIET_COLOUR);
