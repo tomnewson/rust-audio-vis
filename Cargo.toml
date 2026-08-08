@@ -1,0 +1,10 @@
+[package]
+name = "visualiser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flexaudio = "=0.2.0"
+pixels = "0.17.2"
+rustfft = "6.4.1"
+winit = "0.30.13"

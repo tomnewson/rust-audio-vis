@@ -1,0 +1,8 @@
+# rust
+/target
+
+# tom
+/learning/
+
+# ide
+nvim.log
