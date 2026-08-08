@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use analysis::AudioFeatures;
 use audio::{AudioMessage, AudioWorker};
-use pixels::{Pixels, ScalingMode, SurfaceTexture};
+use pixels::wgpu::{Color, CompositeAlphaMode};
+use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
 use render::{HEIGHT, WIDTH, clear_frame, colour_from_audio};
 use simulation::BoidSimulation;
 use winit::application::ApplicationHandler;
@@ -161,6 +162,7 @@ impl ApplicationHandler for App {
 
         let attributes = Window::default_attributes()
             .with_title(title)
+            .with_transparent(true)
             .with_inner_size(LogicalSize::new(WIDTH as f64, HEIGHT as f64))
             .with_min_inner_size(LogicalSize::new(320.0, 240.0));
 
@@ -176,7 +178,11 @@ impl ApplicationHandler for App {
 
         let size = window.inner_size();
         let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
-        let mut pixels = match Pixels::new(WIDTH, HEIGHT, surface) {
+        let mut pixels = match PixelsBuilder::new(WIDTH, HEIGHT, surface)
+            .alpha_mode(CompositeAlphaMode::PreMultiplied)
+            .clear_color(Color::TRANSPARENT)
+            .build()
+        {
             Ok(pixels) => pixels,
             Err(error) => {
                 eprintln!("Could not create the pixel surface: {error}");

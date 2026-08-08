@@ -1,7 +1,7 @@
 pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 480;
 
-const BACKGROUND: [u8; 4] = [0, 0, 0, 255];
+const BACKGROUND: [u8; 4] = [0, 0, 0, 0];
 const QUIET_COLOUR: [u8; 4] = [96, 100, 112, 255];
 const MIN_DBFS: f32 = -50.0;
 const MAX_DBFS: f32 = -10.0;
@@ -221,12 +221,21 @@ fn fill_triangle(frame: &mut [u8], vertices: [[f32; 2]; 3], colour: [u8; 4], opa
             if !(has_negative && has_positive) {
                 let start = ((y * WIDTH + x) * 4) as usize;
                 if let Some(pixel) = frame.get_mut(start..start + 4) {
+                    let destination_alpha = pixel[3] as f32 / 255.0;
+                    let output_alpha = alpha + destination_alpha * (1.0 - alpha);
+
                     for channel in 0..3 {
-                        pixel[channel] = (colour[channel] as f32 * alpha
-                            + pixel[channel] as f32 * (1.0 - alpha))
-                            .round() as u8;
+                        let source = colour[channel] as f32 / 255.0;
+                        let destination = pixel[channel] as f32 / 255.0;
+                        let output = if output_alpha > 0.0 {
+                            (source * alpha + destination * destination_alpha * (1.0 - alpha))
+                                / output_alpha
+                        } else {
+                            0.0
+                        };
+                        pixel[channel] = (output * 255.0).round() as u8;
                     }
-                    pixel[3] = 255;
+                    pixel[3] = (output_alpha * 255.0).round() as u8;
                 }
             }
         }
@@ -247,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_frame_is_true_black() {
+    fn clear_frame_is_fully_transparent() {
         let mut frame = vec![255; (WIDTH * HEIGHT * 4) as usize];
         clear_frame(&mut frame);
         assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), BACKGROUND);
@@ -265,6 +274,20 @@ mod tests {
             [240, 80, 160, 255],
         );
         assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), [240, 80, 160, 255]);
+    }
+
+    #[test]
+    fn fading_boid_remains_transparent() {
+        let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
+        clear_frame(&mut frame);
+        fill_triangle(
+            &mut frame,
+            [[10.0, 10.0], [20.0, 10.0], [10.0, 20.0]],
+            [240, 80, 160, 255],
+            0.5,
+        );
+
+        assert_eq!(pixel_at(&frame, 11, 11), [240, 80, 160, 128]);
     }
 
     #[test]
