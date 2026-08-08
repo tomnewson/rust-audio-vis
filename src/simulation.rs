@@ -7,6 +7,12 @@ const MAX_FRAME_TIME: f32 = 0.1;
 const LIFECYCLE_SECONDS: f32 = 0.35;
 const NEIGHBOUR_RADIUS: f32 = 60.0;
 const SEPARATION_RADIUS: f32 = 18.0;
+const RIPPLE_SPEED: f32 = 360.0;
+const RIPPLE_WIDTH: f32 = 40.0;
+const RIPPLE_FORCE: f32 = 300.0;
+const RIPPLE_SPEED_HEADROOM: f32 = 0.5;
+const MIN_RIPPLE_STRENGTH: f32 = 0.6;
+const MAX_ACTIVE_RIPPLES: usize = 6;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Vec2 {
@@ -93,6 +99,14 @@ struct Boid {
     visibility: f32,
     target_visible: bool,
     wander_angle: f32,
+    ripple_pulse: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BeatRipple {
+    origin: Vec2,
+    radius: f32,
+    strength: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,8 +118,6 @@ pub struct SimulationInputs {
     alignment_weight: f32,
     cohesion_weight: f32,
     wander_strength: f32,
-    beat_strength: f32,
-    beat_expansion: f32,
 }
 
 impl SimulationInputs {
@@ -140,8 +152,6 @@ impl SimulationInputs {
                 + rhythmic_irregularity * 10.0
                 + spectral_flatness * 5.0
                 + finite_unit(features.spectral_flux) * 30.0,
-            beat_strength: finite_unit(features.onset_strength),
-            beat_expansion: 0.0,
         }
     }
 
@@ -157,7 +167,7 @@ pub struct BoidSimulation {
     population_level: f32,
     smoothed_speed: f32,
     last_beat_count: u64,
-    beat_energy: f32,
+    ripples: Vec<BeatRipple>,
 }
 
 impl BoidSimulation {
@@ -173,7 +183,7 @@ impl BoidSimulation {
             population_level: 0.0,
             smoothed_speed: 30.0,
             last_beat_count: 0,
-            beat_energy: 0.0,
+            ripples: Vec::with_capacity(MAX_ACTIVE_RIPPLES),
         }
     }
 
@@ -203,7 +213,7 @@ impl BoidSimulation {
         self.reconcile_population(inputs.target_population(), inputs.max_speed);
 
         if features.beat_count != self.last_beat_count {
-            self.beat_energy = self.beat_energy.max(0.35 + inputs.beat_strength * 0.65);
+            self.spawn_ripple(features.beat_strength);
             self.last_beat_count = features.beat_count;
         }
 
@@ -221,6 +231,7 @@ impl BoidSimulation {
                 [boid.position.x, boid.position.y],
                 [boid.velocity.x, boid.velocity.y],
                 boid.visibility,
+                boid.ripple_pulse,
                 colour,
             );
         }
@@ -255,23 +266,57 @@ impl BoidSimulation {
         }
     }
 
+    fn spawn_ripple(&mut self, strength: f32) {
+        let visible_count = self.boids.iter().filter(|boid| boid.target_visible).count();
+        if visible_count == 0 {
+            return;
+        }
+
+        let selected = ((self.rng.next_f32() * visible_count as f32) as usize)
+            .min(visible_count.saturating_sub(1));
+        let origin = self
+            .boids
+            .iter()
+            .filter(|boid| boid.target_visible)
+            .nth(selected)
+            .map(|boid| boid.position)
+            .expect("the visible boid count was checked");
+
+        if self.ripples.len() == MAX_ACTIVE_RIPPLES {
+            self.ripples.remove(0);
+        }
+        self.ripples.push(BeatRipple {
+            origin,
+            radius: 0.0,
+            strength: finite_unit(strength).max(MIN_RIPPLE_STRENGTH),
+        });
+    }
+
     fn step(&mut self, elapsed_seconds: f32, inputs: SimulationInputs) {
-        let mut inputs = inputs;
-        inputs.beat_expansion = self.beat_energy;
         let accelerations: Vec<Vec2> = (0..self.boids.len())
             .map(|index| calculate_acceleration(index, &self.boids, inputs))
             .collect();
-        let speed_limit = inputs.max_speed * (1.0 + self.beat_energy * 0.7);
+        let ripple_effects: Vec<(Vec2, f32)> = self
+            .boids
+            .iter()
+            .map(|boid| ripple_effect_at(boid.position, &self.ripples))
+            .collect();
 
-        for (boid, acceleration) in self.boids.iter_mut().zip(accelerations) {
+        for ((boid, acceleration), (ripple_acceleration, ripple_pulse)) in
+            self.boids.iter_mut().zip(accelerations).zip(ripple_effects)
+        {
             boid.wander_angle += self.rng.range(-1.0, 1.0) * (0.4 + inputs.wander_strength / 30.0);
             let wander = Vec2::new(boid.wander_angle.cos(), boid.wander_angle.sin())
                 * inputs.wander_strength;
             boid.velocity += (acceleration + wander).limited(inputs.max_force) * elapsed_seconds;
+            boid.velocity += ripple_acceleration * elapsed_seconds;
+            let speed_limit =
+                inputs.max_speed * (1.0 + ripple_pulse.clamp(0.0, 1.0) * RIPPLE_SPEED_HEADROOM);
             boid.velocity = boid.velocity.limited(speed_limit.max(1.0));
             boid.position += boid.velocity * elapsed_seconds;
             boid.position.x = boid.position.x.rem_euclid(WIDTH as f32);
             boid.position.y = boid.position.y.rem_euclid(HEIGHT as f32);
+            boid.ripple_pulse = ripple_pulse.clamp(0.0, 1.0);
 
             let visibility_change = elapsed_seconds / LIFECYCLE_SECONDS;
             if boid.target_visible {
@@ -283,7 +328,12 @@ impl BoidSimulation {
 
         self.boids
             .retain(|boid| boid.target_visible || boid.visibility > 0.0);
-        self.beat_energy = (self.beat_energy - elapsed_seconds / 0.18).max(0.0);
+        for ripple in &mut self.ripples {
+            ripple.radius += RIPPLE_SPEED * elapsed_seconds;
+        }
+        let maximum_radius = maximum_toroidal_distance() + RIPPLE_WIDTH * 0.5;
+        self.ripples
+            .retain(|ripple| ripple.radius <= maximum_radius);
     }
 }
 
@@ -314,9 +364,7 @@ fn calculate_acceleration(index: usize, boids: &[Boid], inputs: SimulationInputs
         neighbours += 1;
         alignment += other.velocity;
         cohesion += offset;
-        let beat_separation_radius =
-            SEPARATION_RADIUS + inputs.beat_expansion * (NEIGHBOUR_RADIUS - SEPARATION_RADIUS);
-        if distance_squared < beat_separation_radius * beat_separation_radius {
+        if distance_squared < SEPARATION_RADIUS * SEPARATION_RADIUS {
             separation += offset * (-1.0 / distance_squared.max(1.0));
         }
     }
@@ -326,8 +374,7 @@ fn calculate_acceleration(index: usize, boids: &[Boid], inputs: SimulationInputs
     }
 
     let count = neighbours as f32;
-    let separation =
-        steering_force(separation, boid.velocity, inputs) * (1.0 + inputs.beat_expansion * 1.5);
+    let separation = steering_force(separation, boid.velocity, inputs);
     let alignment = steering_force(alignment / count, boid.velocity, inputs);
     let cohesion = steering_force(cohesion / count, boid.velocity, inputs);
 
@@ -335,6 +382,36 @@ fn calculate_acceleration(index: usize, boids: &[Boid], inputs: SimulationInputs
         + alignment * inputs.alignment_weight
         + cohesion * inputs.cohesion_weight)
         .limited(inputs.max_force)
+}
+
+fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple]) -> (Vec2, f32) {
+    let mut acceleration = Vec2::ZERO;
+    let mut visual_pulse = 0.0_f32;
+    let half_width = RIPPLE_WIDTH * 0.5;
+
+    for ripple in ripples {
+        let offset = toroidal_offset(ripple.origin, position);
+        let distance = offset.length();
+        let distance_from_front = (distance - ripple.radius).abs();
+        if distance_from_front >= half_width {
+            continue;
+        }
+
+        let phase = distance_from_front / half_width;
+        let envelope = 0.5 + 0.5 * (std::f32::consts::PI * phase).cos();
+        let influence = envelope * ripple.strength;
+        acceleration += offset.normalized_or_zero() * (RIPPLE_FORCE * influence);
+        visual_pulse = visual_pulse.max(influence);
+    }
+
+    (
+        acceleration.limited(RIPPLE_FORCE),
+        visual_pulse.clamp(0.0, 1.0),
+    )
+}
+
+fn maximum_toroidal_distance() -> f32 {
+    (WIDTH as f32 * 0.5).hypot(HEIGHT as f32 * 0.5)
 }
 
 fn steering_force(desired: Vec2, current_velocity: Vec2, inputs: SimulationInputs) -> Vec2 {
@@ -372,6 +449,7 @@ fn random_boid(rng: &mut XorShift64, max_speed: f32) -> Boid {
         visibility: 0.0,
         target_visible: true,
         wander_angle: rng.range(0.0, std::f32::consts::TAU),
+        ripple_pulse: 0.0,
     }
 }
 
@@ -468,6 +546,7 @@ mod tests {
             visibility: 1.0,
             target_visible: true,
             wander_angle: 0.0,
+            ripple_pulse: 0.0,
         });
         let mut inputs = SimulationInputs::from_audio(&loud_features());
         inputs.wander_strength = 0.0;
@@ -478,31 +557,90 @@ mod tests {
     }
 
     #[test]
-    fn beat_expands_local_separation_without_using_screen_position() {
-        let boids = vec![
-            Boid {
-                position: Vec2::new(300.0, 200.0),
-                velocity: Vec2::ZERO,
-                visibility: 1.0,
-                target_visible: true,
-                wander_angle: 0.0,
-            },
-            Boid {
-                position: Vec2::new(340.0, 200.0),
-                velocity: Vec2::ZERO,
-                visibility: 1.0,
-                target_visible: true,
-                wander_angle: 0.0,
-            },
-        ];
-        let mut inputs = SimulationInputs::from_audio(&loud_features());
-        inputs.alignment_weight = 0.0;
-        inputs.cohesion_weight = 0.0;
-        inputs.wander_strength = 0.0;
-        inputs.beat_expansion = 1.0;
+    fn each_new_beat_spawns_one_ripple() {
+        let mut simulation = BoidSimulation::with_seed(3);
+        let mut features = loud_features();
+        features.beat_count = 1;
+        features.beat_strength = 0.8;
 
-        assert!(calculate_acceleration(0, &boids, inputs).x < 0.0);
-        assert!(calculate_acceleration(1, &boids, inputs).x > 0.0);
+        simulation.update(FIXED_TIME_STEP, &features);
+        assert_eq!(simulation.ripples.len(), 1);
+
+        simulation.update(FIXED_TIME_STEP, &features);
+        assert_eq!(simulation.ripples.len(), 1);
+
+        features.beat_count = 2;
+        simulation.update(FIXED_TIME_STEP, &features);
+        assert_eq!(simulation.ripples.len(), 2);
+    }
+
+    #[test]
+    fn ripple_only_affects_boids_at_its_wavefront() {
+        let ripple = BeatRipple {
+            origin: Vec2::new(100.0, 100.0),
+            radius: 50.0,
+            strength: 1.0,
+        };
+
+        let (acceleration, pulse) = ripple_effect_at(Vec2::new(150.0, 100.0), &[ripple]);
+        assert!(acceleration.x > 0.0);
+        assert_eq!(pulse, 1.0);
+        assert_eq!(
+            ripple_effect_at(Vec2::new(110.0, 100.0), &[ripple]),
+            (Vec2::ZERO, 0.0)
+        );
+        assert_eq!(
+            ripple_effect_at(Vec2::new(180.0, 100.0), &[ripple]),
+            (Vec2::ZERO, 0.0)
+        );
+    }
+
+    #[test]
+    fn ripple_crosses_the_toroidal_edge() {
+        let ripple = BeatRipple {
+            origin: Vec2::new(WIDTH as f32 - 10.0, 100.0),
+            radius: 20.0,
+            strength: 1.0,
+        };
+
+        let (acceleration, pulse) = ripple_effect_at(Vec2::new(10.0, 100.0), &[ripple]);
+        assert!(acceleration.x > 0.0);
+        assert_eq!(pulse, 1.0);
+    }
+
+    #[test]
+    fn stronger_beats_create_stronger_ripple_forces() {
+        let position = Vec2::new(150.0, 100.0);
+        let weak = BeatRipple {
+            origin: Vec2::new(100.0, 100.0),
+            radius: 50.0,
+            strength: 0.5,
+        };
+        let strong = BeatRipple {
+            strength: 1.0,
+            ..weak
+        };
+
+        let (weak_force, weak_pulse) = ripple_effect_at(position, &[weak]);
+        let (strong_force, strong_pulse) = ripple_effect_at(position, &[strong]);
+        assert!(strong_force.length() > weak_force.length());
+        assert!(strong_pulse > weak_pulse);
+    }
+
+    #[test]
+    fn ripple_is_removed_after_crossing_the_canvas() {
+        let mut simulation = BoidSimulation::with_seed(5);
+        simulation.ripples.push(BeatRipple {
+            origin: Vec2::ZERO,
+            radius: maximum_toroidal_distance() + RIPPLE_WIDTH * 0.5,
+            strength: 1.0,
+        });
+
+        simulation.step(
+            FIXED_TIME_STEP,
+            SimulationInputs::from_audio(&AudioFeatures::default()),
+        );
+        assert!(simulation.ripples.is_empty());
     }
 
     #[test]
@@ -530,6 +668,7 @@ mod tests {
                 visibility: 1.0,
                 target_visible: true,
                 wander_angle: 0.0,
+                ripple_pulse: 0.0,
             },
             Boid {
                 position: Vec2::new(105.0, 100.0),
@@ -537,6 +676,7 @@ mod tests {
                 visibility: 1.0,
                 target_visible: true,
                 wander_angle: 0.0,
+                ripple_pulse: 0.0,
             },
         ];
         let inputs = SimulationInputs {
@@ -547,8 +687,6 @@ mod tests {
             alignment_weight: 0.0,
             cohesion_weight: 0.0,
             wander_strength: 0.0,
-            beat_strength: 0.0,
-            beat_expansion: 0.0,
         };
         assert!(calculate_acceleration(0, &boids, inputs).x < 0.0);
         assert!(calculate_acceleration(1, &boids, inputs).x > 0.0);

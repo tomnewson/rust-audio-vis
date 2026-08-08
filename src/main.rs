@@ -71,7 +71,6 @@ impl App {
             rms: volume,
             dominant_hz: Some(frequency),
             spectral_flux: onset_strength,
-            onset_strength,
             spectral_flatness: ((time * 0.23).sin() + 1.0) * 0.25,
             bands: analysis::BandEnergies {
                 low: low / band_total,
@@ -84,6 +83,7 @@ impl App {
             bpm: Some(120.0),
             tempo_confidence: 1.0,
             beat_count: (time * 2.0).floor() as u64,
+            beat_strength: 1.0,
         };
     }
 

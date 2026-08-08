@@ -139,6 +139,7 @@ pub fn draw_boid(
     position: [f32; 2],
     velocity: [f32; 2],
     visibility: f32,
+    ripple_pulse: f32,
     colour: [u8; 4],
 ) {
     if !position.into_iter().all(f32::is_finite) || !velocity.into_iter().all(f32::is_finite) {
@@ -158,8 +159,9 @@ pub fn draw_boid(
         [1.0, 0.0]
     };
     let perpendicular = [-direction[1], direction[0]];
-    let length = 9.0 * eased_visibility;
-    let half_width = 4.0 * eased_visibility;
+    let pulse_scale = 1.0 + ripple_pulse.clamp(0.0, 1.0) * 0.6;
+    let length = 9.0 * eased_visibility * pulse_scale;
+    let half_width = 4.0 * eased_visibility * pulse_scale;
     let rear_x = position[0] - direction[0] * length * 0.55;
     let rear_y = position[1] - direction[1] * length * 0.55;
     let vertices = [
@@ -271,6 +273,7 @@ mod tests {
             [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0],
             [1.0, 0.0],
             1.0,
+            0.0,
             [240, 80, 160, 255],
         );
         assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), [240, 80, 160, 255]);
@@ -294,9 +297,22 @@ mod tests {
     fn invisible_and_offscreen_boids_are_safe() {
         let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
         clear_frame(&mut frame);
-        draw_boid(&mut frame, [20.0, 20.0], [1.0, 0.0], 0.0, [255; 4]);
-        draw_boid(&mut frame, [-100.0, -100.0], [1.0, 0.0], 1.0, [255; 4]);
+        draw_boid(&mut frame, [20.0, 20.0], [1.0, 0.0], 0.0, 0.0, [255; 4]);
+        draw_boid(&mut frame, [-100.0, -100.0], [1.0, 0.0], 1.0, 0.0, [255; 4]);
         assert_eq!(pixel_at(&frame, 20, 20), BACKGROUND);
+    }
+
+    #[test]
+    fn ripple_pulse_makes_a_boid_larger() {
+        let mut normal = vec![0; (WIDTH * HEIGHT * 4) as usize];
+        let mut pulsing = normal.clone();
+        let position = [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0];
+        draw_boid(&mut normal, position, [1.0, 0.0], 1.0, 0.0, [255; 4]);
+        draw_boid(&mut pulsing, position, [1.0, 0.0], 1.0, 1.0, [255; 4]);
+
+        let visible_pixels =
+            |frame: &[u8]| frame.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+        assert!(visible_pixels(&pulsing) > visible_pixels(&normal));
     }
 
     #[test]

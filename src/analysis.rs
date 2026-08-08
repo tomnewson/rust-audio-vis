@@ -36,7 +36,6 @@ pub struct AudioFeatures {
     pub rms: f32,
     pub dominant_hz: Option<f32>,
     pub spectral_flux: f32,
-    pub onset_strength: f32,
     pub spectral_flatness: f32,
     pub bands: BandEnergies,
     pub onset_rate_hz: f32,
@@ -45,6 +44,7 @@ pub struct AudioFeatures {
     pub bpm: Option<f32>,
     pub tempo_confidence: f32,
     pub beat_count: u64,
+    pub beat_strength: f32,
 }
 
 pub struct Analyzer {
@@ -66,6 +66,8 @@ pub struct Analyzer {
     tempo_confidence: f32,
     next_beat_time: Option<f32>,
     beat_count: u64,
+    last_beat_strength: f32,
+    pending_beat_strength: Option<f32>,
     smoothed_flatness: f32,
     smoothed_bands: BandEnergies,
     smoothed_onset_rate: f32,
@@ -99,6 +101,8 @@ impl Analyzer {
             tempo_confidence: 0.0,
             next_beat_time: None,
             beat_count: 0,
+            last_beat_strength: 0.0,
+            pending_beat_strength: None,
             smoothed_flatness: 0.0,
             smoothed_bands: BandEnergies::default(),
             smoothed_onset_rate: 0.0,
@@ -214,7 +218,6 @@ impl Analyzer {
             rms,
             dominant_hz,
             spectral_flux,
-            onset_strength,
             spectral_flatness: self.smoothed_flatness,
             bands: self.smoothed_bands,
             onset_rate_hz: self.smoothed_onset_rate,
@@ -223,6 +226,7 @@ impl Analyzer {
             bpm: self.bpm,
             tempo_confidence: self.tempo_confidence,
             beat_count: self.beat_count,
+            beat_strength: self.last_beat_strength,
         }
     }
 
@@ -289,6 +293,7 @@ impl Analyzer {
             if self.tempo_confidence < 0.05 {
                 self.bpm = None;
                 self.next_beat_time = None;
+                self.pending_beat_strength = None;
             }
         }
     }
@@ -301,8 +306,10 @@ impl Analyzer {
 
         let Some(period) = confident_period else {
             self.next_beat_time = None;
-            if onset.is_some() {
+            self.pending_beat_strength = None;
+            if let Some((_, strength)) = onset {
                 self.beat_count = self.beat_count.wrapping_add(1);
+                self.last_beat_strength = strength.clamp(0.0, 1.0);
             }
             return;
         };
@@ -315,14 +322,23 @@ impl Analyzer {
             self.next_beat_time = Some(anchor + period);
         }
 
-        if let (Some((onset_time, _)), Some(next_beat)) = (onset, self.next_beat_time)
+        if let (Some((onset_time, strength)), Some(next_beat)) = (onset, self.next_beat_time)
             && (onset_time - next_beat).abs() <= period * 0.2
         {
             self.next_beat_time = Some(next_beat + (onset_time - next_beat) * 0.35);
+            self.pending_beat_strength = Some(
+                self.pending_beat_strength
+                    .unwrap_or(0.0)
+                    .max(strength.clamp(0.0, 1.0)),
+            );
         }
 
         while self.next_beat_time.is_some_and(|next| frame_time >= next) {
             self.beat_count = self.beat_count.wrapping_add(1);
+            self.last_beat_strength = self
+                .pending_beat_strength
+                .take()
+                .unwrap_or((0.55 + self.tempo_confidence.clamp(0.0, 1.0) * 0.45).clamp(0.0, 1.0));
             self.next_beat_time = self.next_beat_time.map(|next| next + period);
         }
     }
@@ -664,6 +680,18 @@ mod tests {
     }
 
     #[test]
+    fn beat_strength_stays_latched_until_the_next_beat() {
+        let mut analyzer = Analyzer::new();
+        analyzer.update_beat_clock(0.1, Some((0.1, 0.8)));
+        assert_eq!(analyzer.beat_count, 1);
+        assert_eq!(analyzer.last_beat_strength, 0.8);
+
+        analyzer.update_beat_clock(0.2, None);
+        assert_eq!(analyzer.beat_count, 1);
+        assert_eq!(analyzer.last_beat_strength, 0.8);
+    }
+
+    #[test]
     fn analyzer_tracks_a_120_bpm_audio_pulse_train() {
         let mut samples = vec![0.0; SAMPLE_RATE as usize * 10];
         let beat_interval = SAMPLE_RATE as usize / 2;
@@ -687,5 +715,6 @@ mod tests {
         assert!((latest.bpm.unwrap() - 120.0).abs() <= 2.0);
         assert!(latest.tempo_confidence > 0.35);
         assert!(latest.beat_count > 0);
+        assert!(latest.beat_strength > 0.0);
     }
 }
