@@ -1,5 +1,7 @@
+mod canvas;
 mod render;
 mod simulation;
 
-pub use render::{BackgroundMode, ColourPalette, ColourSmoother, HEIGHT, WIDTH, clear_frame};
-pub use simulation::{BoidSimulation, SimulationUpdateStats};
+pub use canvas::{INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH};
+pub use render::{BackgroundMode, BoidInstance, ColourPalette, ColourSmoother, GpuRenderer};
+pub use simulation::{BoidSimulation, MAX_BOIDS, SimulationUpdateStats};

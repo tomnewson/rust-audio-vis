@@ -1,6 +1,6 @@
 # Audio-to-visual mapping
 
-This document describes the mappings currently implemented by the visualiser. Both loopback and microphone input use the same pipeline; only the source of the audio samples changes.
+This document describes how analyzed audio features currently affect the visualiser.
 
 ## Overview
 
@@ -76,7 +76,7 @@ RMS measures the average energy of the current audio window.
 
 It controls:
 
-- Target boid count: `round(loudness × 500)`.
+- Target boid count: `round(loudness × 1,000)`.
 - Base OKLCH chroma: `loudness × 0.24`.
 
 Population changes are smoothed:
@@ -228,7 +228,7 @@ This section shows the final combined values used by the boid simulation.
 ### Number and visibility
 
 ```text
-target_boids = round(loudness × 500)
+target_boids = round(loudness × 1,000)
 ```
 
 Boid opacity and geometric size both ease with lifecycle visibility. This makes boids smoothly appear and disappear instead of popping.
@@ -287,12 +287,4 @@ The base OKLCH colour is converted into a palette of `33` variants. Each boid re
 
 ## Background
 
-The background mode is user-controlled. Press `B` to cycle through black, white, transparent, and boid colour, or select the initial mode with `--background black`, `--background white`, `--background transparent`, or `--background boid`.
-
 The black, white, and transparent modes are not audio-reactive. Boid-colour mode uses the exact smoothed base OKLCH colour for the current frame before the `±45°` per-boid hue variation is applied. It does not receive a ripple colour boost. Like the boid palette, it holds the last valid colour while the boids fade out during silence.
-
-## Source files
-
-- Audio feature extraction: `src/audio/analysis.rs`
-- Audio-to-colour mapping and drawing: `src/visualisation/render.rs`
-- Audio-to-boid mapping and simulation: `src/visualisation/simulation.rs`

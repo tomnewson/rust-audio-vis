@@ -1,13 +1,8 @@
 use super::*;
-
-fn pixel_at(frame: &[u8], x: u32, y: u32) -> &[u8] {
-    let start = ((y * WIDTH + x) * 4) as usize;
-    &frame[start..start + 4]
-}
+use crate::visualisation::MAX_BOIDS;
 
 #[test]
-fn clear_frame_uses_the_selected_background() {
-    let mut frame = vec![255; (WIDTH * HEIGHT * 4) as usize];
+fn background_modes_resolve_to_the_expected_clear_colour() {
     let base = OklchColour {
         lightness: 0.6,
         chroma: 0.15,
@@ -20,8 +15,7 @@ fn clear_frame_uses_the_selected_background() {
         (BackgroundMode::Transparent, TRANSPARENT_BACKGROUND),
         (BackgroundMode::Boid, base.to_rgba()),
     ] {
-        clear_frame(&mut frame, mode, &palette);
-        assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), expected);
+        assert_eq!(mode.colour(&palette), expected);
     }
 }
 
@@ -34,65 +28,129 @@ fn background_modes_cycle_in_display_order() {
 }
 
 #[test]
-fn boid_draws_in_its_colour() {
-    let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(
-        &mut frame,
-        BackgroundMode::Transparent,
-        &ColourPalette::from_base(OklchColour::BLACK),
-    );
-    draw_boid(
-        &mut frame,
-        [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0],
-        [1.0, 0.0],
-        1.0,
-        0.0,
-        [240, 80, 160, 255],
-    );
-    assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), [240, 80, 160, 255]);
+fn boid_instance_preserves_inputs_and_clamps_effects() {
+    let instance = BoidInstance::new([320.0, 240.0], [1.0, 0.0], 2.0, -1.0, [240, 80, 160, 255]);
+
+    assert_eq!(instance.position, [320.0, 240.0]);
+    assert_eq!(instance.velocity, [1.0, 0.0]);
+    assert_eq!(instance.colour, [240, 80, 160, 255]);
+    assert_eq!(instance.visibility, 1.0);
+    assert_eq!(instance.ripple_pulse, 0.0);
 }
 
 #[test]
-fn fading_boid_remains_transparent() {
-    let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(
-        &mut frame,
-        BackgroundMode::Transparent,
-        &ColourPalette::from_base(OklchColour::BLACK),
-    );
-    fill_triangle(
-        &mut frame,
-        [[10.0, 10.0], [20.0, 10.0], [10.0, 20.0]],
-        [240, 80, 160, 255],
-        0.5,
-    );
-
-    assert_eq!(pixel_at(&frame, 11, 11), [240, 80, 160, 128]);
+fn gpu_instance_layout_matches_the_vertex_buffer_layout() {
+    assert_eq!(std::mem::size_of::<BoidInstance>(), 28);
+    assert_eq!(std::mem::align_of::<BoidInstance>(), 4);
+    assert_eq!(std::mem::offset_of!(BoidInstance, position), 0);
+    assert_eq!(std::mem::offset_of!(BoidInstance, velocity), 8);
+    assert_eq!(std::mem::offset_of!(BoidInstance, colour), 16);
+    assert_eq!(std::mem::offset_of!(BoidInstance, visibility), 20);
+    assert_eq!(std::mem::offset_of!(BoidInstance, ripple_pulse), 24);
 }
 
 #[test]
-fn invisible_and_offscreen_boids_are_safe() {
-    let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(
-        &mut frame,
-        BackgroundMode::Transparent,
-        &ColourPalette::from_base(OklchColour::BLACK),
-    );
-    draw_boid(&mut frame, [20.0, 20.0], [1.0, 0.0], 0.0, 0.0, [255; 4]);
-    draw_boid(&mut frame, [-100.0, -100.0], [1.0, 0.0], 1.0, 0.0, [255; 4]);
-    assert_eq!(pixel_at(&frame, 20, 20), TRANSPARENT_BACKGROUND);
+#[ignore = "manual GPU performance benchmark"]
+fn benchmark_gpu_renderer_at_4k() {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            })
+            .await
+            .expect("a high-performance GPU adapter is required");
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .expect("a GPU device is required");
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("4k benchmark target"),
+            size: wgpu::Extent3d {
+                width: 3_840,
+                height: 2_160,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let renderer = GpuRenderer::new(&device, format, MAX_BOIDS);
+        let canvas = CanvasSize::from_surface(3_840, 2_160);
+        let palette = ColourPalette::from_base(OklchColour {
+            lightness: 0.65,
+            chroma: 0.18,
+            hue_degrees: 220.0,
+        });
+        let instances: Vec<BoidInstance> = (0..MAX_BOIDS)
+            .map(|index| {
+                let column = index % 40;
+                let row = index / 40;
+                BoidInstance::new(
+                    [
+                        (column as f32 + 0.5) * canvas.width / 40.0,
+                        (row as f32 + 0.5) * canvas.height / 25.0,
+                    ],
+                    [80.0, 40.0],
+                    1.0,
+                    (index % 10) as f32 / 10.0,
+                    palette.colour_for((index % COLOUR_VARIANT_COUNT) as u8, 0.5),
+                )
+            })
+            .collect();
+        renderer.prepare(&queue, canvas.as_array(), &instances);
+
+        let render_frame = || {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("4k benchmark encoder"),
+            });
+            renderer.render(
+                &mut encoder,
+                &target_view,
+                BackgroundMode::Boid,
+                &palette,
+                instances.len(),
+            );
+            queue.submit(Some(encoder.finish()));
+        };
+
+        for _ in 0..30 {
+            render_frame();
+        }
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("GPU warmup should finish");
+
+        const FRAMES: usize = 300;
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            render_frame();
+        }
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("GPU benchmark should finish");
+        let milliseconds = started.elapsed().as_secs_f64() * 1_000.0 / FRAMES as f64;
+        eprintln!(
+            "4k GPU render: {milliseconds:.3} ms/frame on {}",
+            adapter.get_info().name
+        );
+    });
 }
 
 #[test]
-fn ripple_pulse_makes_a_boid_larger() {
-    let mut normal = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    let mut pulsing = normal.clone();
-    let position = [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0];
-    draw_boid(&mut normal, position, [1.0, 0.0], 1.0, 0.0, [255; 4]);
-    draw_boid(&mut pulsing, position, [1.0, 0.0], 1.0, 1.0, [255; 4]);
-
-    let visible_pixels = |frame: &[u8]| frame.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
-    assert!(visible_pixels(&pulsing) > visible_pixels(&normal));
+fn clear_colour_converts_srgb_to_linear_and_preserves_alpha() {
+    let clear = clear_colour([128, 64, 32, 128]);
+    assert!((clear.r - srgb_to_linear(128) as f64).abs() < f64::EPSILON);
+    assert!((clear.g - srgb_to_linear(64) as f64).abs() < f64::EPSILON);
+    assert!((clear.b - srgb_to_linear(32) as f64).abs() < f64::EPSILON);
+    assert!((clear.a - 128.0 / 255.0).abs() < f64::EPSILON);
 }
 
 #[test]

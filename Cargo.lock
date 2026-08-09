@@ -2468,8 +2468,10 @@ dependencies = [
 name = "visualiser"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "flexaudio",
  "pixels",
+ "pollster",
  "rustfft",
  "winit",
 ]

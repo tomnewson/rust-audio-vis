@@ -1,10 +1,10 @@
 use crate::audio::AudioFeatures;
+use crate::visualisation::canvas::CanvasSize;
 use crate::visualisation::render::{
-    COLOUR_VARIANT_COUNT, ColourPalette, HEIGHT, WIDTH, draw_boid, loudness_position,
-    pitch_position,
+    BoidInstance, COLOUR_VARIANT_COUNT, ColourPalette, loudness_position, pitch_position,
 };
 
-const MAX_BOIDS: usize = 500;
+pub const MAX_BOIDS: usize = 1_000;
 const FIXED_TIME_STEP: f32 = 1.0 / 60.0;
 const MAX_FRAME_TIME: f32 = 0.1;
 const MAX_FIXED_STEPS_PER_FRAME: usize = 4;
@@ -122,52 +122,61 @@ struct StepEffect {
 }
 
 struct SpatialGrid {
+    canvas: CanvasSize,
     columns: usize,
     rows: usize,
     cell_width: f32,
     cell_height: f32,
     cells: Vec<Vec<usize>>,
     neighbouring_cells: Vec<[usize; 9]>,
+    neighbour_counts: Vec<u8>,
 }
 
 impl SpatialGrid {
-    fn new() -> Self {
-        let columns = ((WIDTH as f32 / NEIGHBOUR_RADIUS).floor() as usize).max(1);
-        let rows = ((HEIGHT as f32 / NEIGHBOUR_RADIUS).floor() as usize).max(1);
-        let cell_width = WIDTH as f32 / columns as f32;
-        let cell_height = HEIGHT as f32 / rows as f32;
+    fn new(canvas: CanvasSize) -> Self {
+        let columns = ((canvas.width / NEIGHBOUR_RADIUS).floor() as usize).max(1);
+        let rows = ((canvas.height / NEIGHBOUR_RADIUS).floor() as usize).max(1);
+        let cell_width = canvas.width / columns as f32;
+        let cell_height = canvas.height / rows as f32;
         let cell_count = columns * rows;
         let expected_boids_per_cell = (MAX_BOIDS / cell_count).max(1);
         let cells = (0..cell_count)
             .map(|_| Vec::with_capacity(expected_boids_per_cell * 2))
             .collect();
         let mut neighbouring_cells = Vec::with_capacity(cell_count);
+        let mut neighbour_counts = Vec::with_capacity(cell_count);
 
         for row in 0..rows {
             for column in 0..columns {
                 let mut neighbours = [0; 9];
-                let mut next = 0;
+                let mut neighbour_count = 0;
                 for row_offset in -1_isize..=1 {
                     for column_offset in -1_isize..=1 {
                         let neighbour_column =
                             (column as isize + column_offset).rem_euclid(columns as isize) as usize;
                         let neighbour_row =
                             (row as isize + row_offset).rem_euclid(rows as isize) as usize;
-                        neighbours[next] = neighbour_row * columns + neighbour_column;
-                        next += 1;
+                        let neighbour = neighbour_row * columns + neighbour_column;
+                        if !neighbours[..neighbour_count].contains(&neighbour) {
+                            neighbours[neighbour_count] = neighbour;
+                            neighbour_count += 1;
+                        }
                     }
                 }
                 neighbouring_cells.push(neighbours);
+                neighbour_counts.push(neighbour_count as u8);
             }
         }
 
         Self {
+            canvas,
             columns,
             rows,
             cell_width,
             cell_height,
             cells,
             neighbouring_cells,
+            neighbour_counts,
         }
     }
 
@@ -185,15 +194,16 @@ impl SpatialGrid {
     }
 
     fn cell_for_position(&self, position: Vec2) -> usize {
-        let x = position.x.rem_euclid(WIDTH as f32);
-        let y = position.y.rem_euclid(HEIGHT as f32);
+        let x = position.x.rem_euclid(self.canvas.width);
+        let y = position.y.rem_euclid(self.canvas.height);
         let column = ((x / self.cell_width) as usize).min(self.columns - 1);
         let row = ((y / self.cell_height) as usize).min(self.rows - 1);
         row * self.columns + column
     }
 
-    fn neighbouring_cells_for(&self, position: Vec2) -> &[usize; 9] {
-        &self.neighbouring_cells[self.cell_for_position(position)]
+    fn neighbouring_cells_for(&self, position: Vec2) -> &[usize] {
+        let cell = self.cell_for_position(position);
+        &self.neighbouring_cells[cell][..usize::from(self.neighbour_counts[cell])]
     }
 }
 
@@ -257,6 +267,7 @@ impl SimulationInputs {
 }
 
 pub struct BoidSimulation {
+    canvas: CanvasSize,
     boids: Vec<Boid>,
     rng: XorShift64,
     accumulator: f32,
@@ -274,7 +285,9 @@ impl BoidSimulation {
     }
 
     fn with_seed(seed: u64) -> Self {
+        let canvas = CanvasSize::default();
         Self {
+            canvas,
             boids: Vec::with_capacity(MAX_BOIDS),
             rng: XorShift64::new(seed),
             accumulator: 0.0,
@@ -282,9 +295,34 @@ impl BoidSimulation {
             smoothed_speed: 30.0,
             last_beat_count: 0,
             ripples: Vec::with_capacity(MAX_ACTIVE_RIPPLES),
-            spatial_grid: SpatialGrid::new(),
+            spatial_grid: SpatialGrid::new(canvas),
             step_effects: Vec::with_capacity(MAX_BOIDS),
         }
+    }
+
+    pub fn canvas(&self) -> CanvasSize {
+        self.canvas
+    }
+
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        let new_canvas = CanvasSize::from_surface(width, height);
+        if new_canvas == self.canvas {
+            return;
+        }
+
+        let scale_x = new_canvas.width / self.canvas.width;
+        let scale_y = new_canvas.height / self.canvas.height;
+        for boid in &mut self.boids {
+            boid.position.x *= scale_x;
+            boid.position.y *= scale_y;
+        }
+        for ripple in &mut self.ripples {
+            ripple.origin.x *= scale_x;
+            ripple.origin.y *= scale_y;
+        }
+
+        self.canvas = new_canvas;
+        self.spatial_grid = SpatialGrid::new(new_canvas);
     }
 
     pub fn update(
@@ -345,17 +383,18 @@ impl BoidSimulation {
         }
     }
 
-    pub fn draw(&self, frame: &mut [u8], palette: &ColourPalette) {
+    pub fn write_instances(&self, palette: &ColourPalette, instances: &mut Vec<BoidInstance>) {
+        instances.clear();
+        instances.reserve(self.boids.len());
         for boid in &self.boids {
             let colour = palette.colour_for(boid.colour_index, boid.ripple_pulse);
-            draw_boid(
-                frame,
+            instances.push(BoidInstance::new(
                 [boid.position.x, boid.position.y],
                 [boid.velocity.x, boid.velocity.y],
                 boid.visibility,
                 boid.ripple_pulse,
                 colour,
-            );
+            ));
         }
     }
 
@@ -372,7 +411,8 @@ impl BoidSimulation {
             }
 
             while active < target {
-                self.boids.push(random_boid(&mut self.rng, max_speed));
+                self.boids
+                    .push(random_boid(&mut self.rng, max_speed, self.canvas));
                 active += 1;
             }
         } else if active > target {
@@ -419,7 +459,7 @@ impl BoidSimulation {
         self.step_effects.clear();
         for (index, boid) in self.boids.iter().enumerate() {
             let (ripple_acceleration, ripple_pulse) =
-                ripple_effect_at(boid.position, &self.ripples);
+                ripple_effect_at(boid.position, &self.ripples, self.canvas);
             self.step_effects.push(StepEffect {
                 flock_acceleration: calculate_acceleration(
                     index,
@@ -443,8 +483,8 @@ impl BoidSimulation {
                 * (1.0 + effect.ripple_pulse.clamp(0.0, 1.0) * RIPPLE_SPEED_HEADROOM);
             boid.velocity = boid.velocity.limited(speed_limit.max(1.0));
             boid.position += boid.velocity * elapsed_seconds;
-            boid.position.x = boid.position.x.rem_euclid(WIDTH as f32);
-            boid.position.y = boid.position.y.rem_euclid(HEIGHT as f32);
+            boid.position.x = boid.position.x.rem_euclid(self.canvas.width);
+            boid.position.y = boid.position.y.rem_euclid(self.canvas.height);
             boid.ripple_pulse = effect.ripple_pulse.clamp(0.0, 1.0);
 
             let visibility_change = elapsed_seconds / LIFECYCLE_SECONDS;
@@ -460,7 +500,7 @@ impl BoidSimulation {
         for ripple in &mut self.ripples {
             ripple.radius += RIPPLE_SPEED * elapsed_seconds;
         }
-        let maximum_radius = maximum_toroidal_distance() + RIPPLE_WIDTH * 0.5;
+        let maximum_radius = maximum_toroidal_distance(self.canvas) + RIPPLE_WIDTH * 0.5;
         self.ripples
             .retain(|ripple| ripple.radius <= maximum_radius);
     }
@@ -491,7 +531,7 @@ fn calculate_acceleration(
             }
             let other = &boids[other_index];
 
-            let offset = toroidal_offset(boid.position, other.position);
+            let offset = toroidal_offset(boid.position, other.position, grid.canvas);
             let distance_squared = offset.length_squared();
             if distance_squared > NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS {
                 continue;
@@ -521,13 +561,13 @@ fn calculate_acceleration(
         .limited(inputs.max_force)
 }
 
-fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple]) -> (Vec2, f32) {
+fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple], canvas: CanvasSize) -> (Vec2, f32) {
     let mut acceleration = Vec2::ZERO;
     let mut visual_pulse = 0.0_f32;
     let half_width = RIPPLE_WIDTH * 0.5;
 
     for ripple in ripples {
-        let offset = toroidal_offset(ripple.origin, position);
+        let offset = toroidal_offset(ripple.origin, position, canvas);
         let distance = offset.length();
         let distance_from_front = (distance - ripple.radius).abs();
         if distance_from_front >= half_width {
@@ -547,8 +587,8 @@ fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple]) -> (Vec2, f32) {
     )
 }
 
-fn maximum_toroidal_distance() -> f32 {
-    (WIDTH as f32 * 0.5).hypot(HEIGHT as f32 * 0.5)
+fn maximum_toroidal_distance(canvas: CanvasSize) -> f32 {
+    (canvas.width * 0.5).hypot(canvas.height * 0.5)
 }
 
 fn steering_force(desired: Vec2, current_velocity: Vec2, inputs: SimulationInputs) -> Vec2 {
@@ -560,30 +600,30 @@ fn steering_force(desired: Vec2, current_velocity: Vec2, inputs: SimulationInput
     }
 }
 
-fn toroidal_offset(from: Vec2, to: Vec2) -> Vec2 {
+fn toroidal_offset(from: Vec2, to: Vec2, canvas: CanvasSize) -> Vec2 {
     let mut offset = to - from;
-    let half_width = WIDTH as f32 / 2.0;
-    let half_height = HEIGHT as f32 / 2.0;
+    let half_width = canvas.width / 2.0;
+    let half_height = canvas.height / 2.0;
     if offset.x > half_width {
-        offset.x -= WIDTH as f32;
+        offset.x -= canvas.width;
     } else if offset.x < -half_width {
-        offset.x += WIDTH as f32;
+        offset.x += canvas.width;
     }
     if offset.y > half_height {
-        offset.y -= HEIGHT as f32;
+        offset.y -= canvas.height;
     } else if offset.y < -half_height {
-        offset.y += HEIGHT as f32;
+        offset.y += canvas.height;
     }
     offset
 }
 
-fn random_boid(rng: &mut XorShift64, max_speed: f32) -> Boid {
+fn random_boid(rng: &mut XorShift64, max_speed: f32, canvas: CanvasSize) -> Boid {
     let angle = rng.range(0.0, std::f32::consts::TAU);
     let speed = rng.range(max_speed * 0.6, max_speed.max(1.0));
     let colour_index = ((rng.next_f32() * COLOUR_VARIANT_COUNT as f32) as usize)
         .min(COLOUR_VARIANT_COUNT - 1) as u8;
     Boid {
-        position: Vec2::new(rng.range(0.0, WIDTH as f32), rng.range(0.0, HEIGHT as f32)),
+        position: Vec2::new(rng.range(0.0, canvas.width), rng.range(0.0, canvas.height)),
         velocity: Vec2::new(angle.cos(), angle.sin()) * speed,
         visibility: 0.0,
         target_visible: true,

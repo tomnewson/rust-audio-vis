@@ -1,7 +1,7 @@
 use crate::audio::AudioFeatures;
-
-pub const WIDTH: u32 = 640;
-pub const HEIGHT: u32 = 480;
+use crate::visualisation::canvas::CanvasSize;
+use bytemuck::{Pod, Zeroable};
+use pixels::wgpu::{self, util::DeviceExt};
 
 const BLACK_BACKGROUND: [u8; 4] = [0, 0, 0, 255];
 const WHITE_BACKGROUND: [u8; 4] = [255, 255, 255, 255];
@@ -325,157 +325,223 @@ fn linear_to_srgb(channel: f32) -> f32 {
     }
 }
 
-pub fn clear_frame(frame: &mut [u8], background: BackgroundMode, palette: &ColourPalette) {
-    let colour = background.colour(palette);
-    let usable_length = frame.len() / 4 * 4;
-    if usable_length == 0 {
-        return;
-    }
-
-    frame[..4].copy_from_slice(&colour);
-    let mut filled_length = 4;
-    while filled_length < usable_length {
-        let copy_length = filled_length.min(usable_length - filled_length);
-        frame.copy_within(0..copy_length, filled_length);
-        filled_length += copy_length;
-    }
-}
-
-pub fn draw_boid(
-    frame: &mut [u8],
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct BoidInstance {
     position: [f32; 2],
     velocity: [f32; 2],
+    colour: [u8; 4],
     visibility: f32,
     ripple_pulse: f32,
-    colour: [u8; 4],
-) {
-    if !position.into_iter().all(f32::is_finite) || !velocity.into_iter().all(f32::is_finite) {
-        return;
-    }
-
-    let visibility = visibility.clamp(0.0, 1.0);
-    let eased_visibility = visibility * visibility * (3.0 - 2.0 * visibility);
-    if eased_visibility <= 0.0 {
-        return;
-    }
-
-    let velocity_length = velocity[0].hypot(velocity[1]);
-    let direction = if velocity_length > 0.001 {
-        [velocity[0] / velocity_length, velocity[1] / velocity_length]
-    } else {
-        [1.0, 0.0]
-    };
-    let perpendicular = [-direction[1], direction[0]];
-    let pulse_scale = 1.0 + ripple_pulse.clamp(0.0, 1.0) * 0.6;
-    let length = 9.0 * eased_visibility * pulse_scale;
-    let half_width = 4.0 * eased_visibility * pulse_scale;
-    let rear_x = position[0] - direction[0] * length * 0.55;
-    let rear_y = position[1] - direction[1] * length * 0.55;
-    let vertices = [
-        [
-            position[0] + direction[0] * length,
-            position[1] + direction[1] * length,
-        ],
-        [
-            rear_x + perpendicular[0] * half_width,
-            rear_y + perpendicular[1] * half_width,
-        ],
-        [
-            rear_x - perpendicular[0] * half_width,
-            rear_y - perpendicular[1] * half_width,
-        ],
-    ];
-
-    fill_triangle(frame, vertices, colour, eased_visibility);
 }
 
-fn fill_triangle(frame: &mut [u8], vertices: [[f32; 2]; 3], colour: [u8; 4], opacity: f32) {
-    let min_x = vertices
-        .iter()
-        .map(|vertex| vertex[0])
-        .fold(f32::INFINITY, f32::min)
-        .floor()
-        .clamp(0.0, WIDTH.saturating_sub(1) as f32) as u32;
-    let max_x = vertices
-        .iter()
-        .map(|vertex| vertex[0])
-        .fold(f32::NEG_INFINITY, f32::max)
-        .ceil()
-        .clamp(0.0, WIDTH.saturating_sub(1) as f32) as u32;
-    let min_y = vertices
-        .iter()
-        .map(|vertex| vertex[1])
-        .fold(f32::INFINITY, f32::min)
-        .floor()
-        .clamp(0.0, HEIGHT.saturating_sub(1) as f32) as u32;
-    let max_y = vertices
-        .iter()
-        .map(|vertex| vertex[1])
-        .fold(f32::NEG_INFINITY, f32::max)
-        .ceil()
-        .clamp(0.0, HEIGHT.saturating_sub(1) as f32) as u32;
-
-    let alpha = opacity * (colour[3] as f32 / 255.0);
-    let first_point = [min_x as f32 + 0.5, min_y as f32 + 0.5];
-    let mut row_edges = [
-        edge(vertices[0], vertices[1], first_point),
-        edge(vertices[1], vertices[2], first_point),
-        edge(vertices[2], vertices[0], first_point),
-    ];
-    let x_steps = [
-        vertices[1][1] - vertices[0][1],
-        vertices[2][1] - vertices[1][1],
-        vertices[0][1] - vertices[2][1],
-    ];
-    let y_steps = [
-        vertices[0][0] - vertices[1][0],
-        vertices[1][0] - vertices[2][0],
-        vertices[2][0] - vertices[0][0],
-    ];
-
-    for y in min_y..=max_y {
-        let mut edges = row_edges;
-        for x in min_x..=max_x {
-            let all_non_negative = edges[0] >= 0.0 && edges[1] >= 0.0 && edges[2] >= 0.0;
-            let all_non_positive = edges[0] <= 0.0 && edges[1] <= 0.0 && edges[2] <= 0.0;
-            if all_non_negative || all_non_positive {
-                let start = ((y * WIDTH + x) * 4) as usize;
-                if let Some(pixel) = frame.get_mut(start..start + 4) {
-                    if alpha >= 1.0 {
-                        pixel.copy_from_slice(&colour);
-                    } else {
-                        let destination_alpha = pixel[3] as f32 / 255.0;
-                        let output_alpha = alpha + destination_alpha * (1.0 - alpha);
-
-                        for channel in 0..3 {
-                            let source = colour[channel] as f32 / 255.0;
-                            let destination = pixel[channel] as f32 / 255.0;
-                            let output = if output_alpha > 0.0 {
-                                (source * alpha + destination * destination_alpha * (1.0 - alpha))
-                                    / output_alpha
-                            } else {
-                                0.0
-                            };
-                            pixel[channel] = (output * 255.0).round() as u8;
-                        }
-                        pixel[3] = (output_alpha * 255.0).round() as u8;
-                    }
-                }
-            }
-
-            edges[0] += x_steps[0];
-            edges[1] += x_steps[1];
-            edges[2] += x_steps[2];
+impl BoidInstance {
+    pub fn new(
+        position: [f32; 2],
+        velocity: [f32; 2],
+        visibility: f32,
+        ripple_pulse: f32,
+        colour: [u8; 4],
+    ) -> Self {
+        Self {
+            position,
+            velocity,
+            colour,
+            visibility: finite_unit(visibility),
+            ripple_pulse: finite_unit(ripple_pulse),
         }
-
-        row_edges[0] += y_steps[0];
-        row_edges[1] += y_steps[1];
-        row_edges[2] += y_steps[2];
     }
 }
 
-fn edge(start: [f32; 2], end: [f32; 2], point: [f32; 2]) -> f32 {
-    (point[0] - start[0]) * (end[1] - start[1]) - (point[1] - start[1]) * (end[0] - start[0])
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ViewportUniform {
+    size: [f32; 2],
+    _padding: [f32; 2],
+}
+
+pub struct GpuRenderer {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
+    viewport_buffer: wgpu::Buffer,
+    viewport_bind_group: wgpu::BindGroup,
+    max_instances: usize,
+}
+
+impl GpuRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        max_instances: usize,
+    ) -> Self {
+        let vertices: [[f32; 2]; 3] = [[1.0, 0.0], [-0.55, 1.0], [-0.55, -1.0]];
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("boid vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("boid instances"),
+            size: (max_instances * std::mem::size_of::<BoidInstance>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let viewport = ViewportUniform {
+            size: CanvasSize::default().as_array(),
+            _padding: [0.0; 2],
+        };
+        let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("boid viewport"),
+            contents: bytemuck::bytes_of(&viewport),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("boid viewport layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<ViewportUniform>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let viewport_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("boid viewport bind group"),
+            layout: &viewport_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: viewport_buffer.as_entire_binding(),
+            }],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("boid shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("boids.wgsl").into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("boid pipeline layout"),
+            bind_group_layouts: &[Some(&viewport_layout)],
+            immediate_size: 0,
+        });
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x2];
+        let instance_attributes = wgpu::vertex_attr_array![
+            1 => Float32x2,
+            2 => Float32x2,
+            3 => Unorm8x4,
+            4 => Float32x2
+        ];
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("boid pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex_attributes,
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<BoidInstance>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &instance_attributes,
+                    },
+                ],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            vertex_buffer,
+            instance_buffer,
+            viewport_buffer,
+            viewport_bind_group,
+            max_instances,
+        }
+    }
+
+    pub fn prepare(&self, queue: &wgpu::Queue, viewport: [f32; 2], instances: &[BoidInstance]) {
+        assert!(instances.len() <= self.max_instances);
+        let viewport = ViewportUniform {
+            size: viewport,
+            _padding: [0.0; 2],
+        };
+        queue.write_buffer(&self.viewport_buffer, 0, bytemuck::bytes_of(&viewport));
+        if !instances.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        }
+    }
+
+    pub fn render(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        render_target: &wgpu::TextureView,
+        background: BackgroundMode,
+        palette: &ColourPalette,
+        instance_count: usize,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("boid render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: render_target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear_colour(background.colour(palette))),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        pass.draw(0..3, 0..instance_count as u32);
+    }
+}
+
+fn clear_colour(colour: [u8; 4]) -> wgpu::Color {
+    wgpu::Color {
+        r: srgb_to_linear(colour[0]) as f64,
+        g: srgb_to_linear(colour[1]) as f64,
+        b: srgb_to_linear(colour[2]) as f64,
+        a: colour[3] as f64 / 255.0,
+    }
+}
+
+fn srgb_to_linear(channel: u8) -> f32 {
+    let encoded = channel as f32 / 255.0;
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 #[cfg(test)]

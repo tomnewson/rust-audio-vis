@@ -17,6 +17,10 @@ fn loud_features() -> AudioFeatures {
     }
 }
 
+fn default_canvas() -> CanvasSize {
+    CanvasSize::default()
+}
+
 fn calculate_acceleration_brute_force(
     index: usize,
     boids: &[Boid],
@@ -33,7 +37,7 @@ fn calculate_acceleration_brute_force(
             continue;
         }
 
-        let offset = toroidal_offset(boid.position, other.position);
+        let offset = toroidal_offset(boid.position, other.position, default_canvas());
         let distance_squared = offset.length_squared();
         if distance_squared > NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS {
             continue;
@@ -79,15 +83,15 @@ fn spatial_grid_matches_brute_force_flocking() {
     let inputs = SimulationInputs::from_audio(&loud_features());
     let mut boids: Vec<Boid> = (0..200)
         .map(|_| {
-            let mut boid = random_boid(&mut rng, inputs.max_speed);
+            let mut boid = random_boid(&mut rng, inputs.max_speed, default_canvas());
             boid.visibility = 1.0;
             boid
         })
         .collect();
     boids[0].position = Vec2::new(2.0, 2.0);
-    boids[1].position = Vec2::new(WIDTH as f32 - 2.0, HEIGHT as f32 - 2.0);
+    boids[1].position = Vec2::new(default_canvas().width - 2.0, default_canvas().height - 2.0);
 
-    let mut grid = SpatialGrid::new();
+    let mut grid = SpatialGrid::new(default_canvas());
     grid.rebuild(&boids);
     for index in 0..boids.len() {
         let grid_result = calculate_acceleration(index, &boids, &grid, inputs);
@@ -99,11 +103,23 @@ fn spatial_grid_matches_brute_force_flocking() {
 
 #[test]
 fn spatial_grid_has_nine_unique_neighbouring_cells() {
-    let grid = SpatialGrid::new();
+    let grid = SpatialGrid::new(default_canvas());
     for neighbouring_cells in &grid.neighbouring_cells {
         let unique: HashSet<usize> = neighbouring_cells.iter().copied().collect();
         assert_eq!(unique.len(), 9);
     }
+}
+
+#[test]
+fn narrow_canvas_grid_does_not_visit_the_same_cell_twice() {
+    let grid = SpatialGrid::new(CanvasSize {
+        width: 100.0,
+        height: 480.0,
+    });
+    let neighbours = grid.neighbouring_cells_for(Vec2::new(50.0, 240.0));
+    let unique: HashSet<usize> = neighbours.iter().copied().collect();
+
+    assert_eq!(unique.len(), neighbours.len());
 }
 
 #[test]
@@ -119,7 +135,7 @@ fn catch_up_work_is_bounded() {
 #[test]
 #[ignore = "manual simulation performance benchmark"]
 fn benchmark_population_sizes() {
-    for population in [100, 250, 500] {
+    for population in [100, 250, 500, 1_000] {
         let mut simulation = BoidSimulation::with_seed(population as u64);
         let inputs = SimulationInputs::from_audio(&loud_features());
         simulation.reconcile_population(population, inputs.max_speed);
@@ -205,7 +221,7 @@ fn boids_fade_in_and_are_removed_after_fading_out() {
 fn wrapping_keeps_positions_inside_the_canvas() {
     let mut simulation = BoidSimulation::with_seed(2);
     simulation.boids.push(Boid {
-        position: Vec2::new(WIDTH as f32 - 0.1, HEIGHT as f32 - 0.1),
+        position: Vec2::new(default_canvas().width - 0.1, default_canvas().height - 0.1),
         velocity: Vec2::new(100.0, 100.0),
         visibility: 1.0,
         target_visible: true,
@@ -217,8 +233,29 @@ fn wrapping_keeps_positions_inside_the_canvas() {
     inputs.wander_strength = 0.0;
     simulation.step(0.1, inputs);
     let position = simulation.boids[0].position;
-    assert!((0.0..WIDTH as f32).contains(&position.x));
-    assert!((0.0..HEIGHT as f32).contains(&position.y));
+    assert!((0.0..simulation.canvas.width).contains(&position.x));
+    assert!((0.0..simulation.canvas.height).contains(&position.y));
+}
+
+#[test]
+fn resizing_preserves_relative_positions_and_rebuilds_the_grid() {
+    let mut simulation = BoidSimulation::with_seed(7);
+    simulation.boids.push(Boid {
+        position: Vec2::new(320.0, 240.0),
+        velocity: Vec2::new(10.0, 5.0),
+        visibility: 1.0,
+        target_visible: true,
+        wander_angle: 0.0,
+        ripple_pulse: 0.0,
+        colour_index: 0,
+    });
+
+    simulation.resize_surface(3_840, 2_160);
+
+    let canvas = simulation.canvas();
+    assert!((simulation.boids[0].position.x / canvas.width - 0.5).abs() < 0.001);
+    assert!((simulation.boids[0].position.y / canvas.height - 0.5).abs() < 0.001);
+    assert_eq!(simulation.spatial_grid.canvas, canvas);
 }
 
 #[test]
@@ -247,15 +284,16 @@ fn ripple_only_affects_boids_at_its_wavefront() {
         strength: 1.0,
     };
 
-    let (acceleration, pulse) = ripple_effect_at(Vec2::new(150.0, 100.0), &[ripple]);
+    let (acceleration, pulse) =
+        ripple_effect_at(Vec2::new(150.0, 100.0), &[ripple], default_canvas());
     assert!(acceleration.x > 0.0);
     assert_eq!(pulse, 1.0);
     assert_eq!(
-        ripple_effect_at(Vec2::new(110.0, 100.0), &[ripple]),
+        ripple_effect_at(Vec2::new(110.0, 100.0), &[ripple], default_canvas()),
         (Vec2::ZERO, 0.0)
     );
     assert_eq!(
-        ripple_effect_at(Vec2::new(180.0, 100.0), &[ripple]),
+        ripple_effect_at(Vec2::new(180.0, 100.0), &[ripple], default_canvas()),
         (Vec2::ZERO, 0.0)
     );
 }
@@ -263,12 +301,13 @@ fn ripple_only_affects_boids_at_its_wavefront() {
 #[test]
 fn ripple_crosses_the_toroidal_edge() {
     let ripple = BeatRipple {
-        origin: Vec2::new(WIDTH as f32 - 10.0, 100.0),
+        origin: Vec2::new(default_canvas().width - 10.0, 100.0),
         radius: 20.0,
         strength: 1.0,
     };
 
-    let (acceleration, pulse) = ripple_effect_at(Vec2::new(10.0, 100.0), &[ripple]);
+    let (acceleration, pulse) =
+        ripple_effect_at(Vec2::new(10.0, 100.0), &[ripple], default_canvas());
     assert!(acceleration.x > 0.0);
     assert_eq!(pulse, 1.0);
 }
@@ -286,8 +325,8 @@ fn stronger_beats_create_stronger_ripple_forces() {
         ..weak
     };
 
-    let (weak_force, weak_pulse) = ripple_effect_at(position, &[weak]);
-    let (strong_force, strong_pulse) = ripple_effect_at(position, &[strong]);
+    let (weak_force, weak_pulse) = ripple_effect_at(position, &[weak], default_canvas());
+    let (strong_force, strong_pulse) = ripple_effect_at(position, &[strong], default_canvas());
     assert!(strong_force.length() > weak_force.length());
     assert!(strong_pulse > weak_pulse);
 }
@@ -297,7 +336,7 @@ fn ripple_is_removed_after_crossing_the_canvas() {
     let mut simulation = BoidSimulation::with_seed(5);
     simulation.ripples.push(BeatRipple {
         origin: Vec2::ZERO,
-        radius: maximum_toroidal_distance() + RIPPLE_WIDTH * 0.5,
+        radius: maximum_toroidal_distance(default_canvas()) + RIPPLE_WIDTH * 0.5,
         strength: 1.0,
     });
 
@@ -386,7 +425,7 @@ fn separation_pushes_close_boids_apart() {
         cohesion_weight: 0.0,
         wander_strength: 0.0,
     };
-    let mut grid = SpatialGrid::new();
+    let mut grid = SpatialGrid::new(default_canvas());
     grid.rebuild(&boids);
     assert!(calculate_acceleration(0, &boids, &grid, inputs).x < 0.0);
     assert!(calculate_acceleration(1, &boids, &grid, inputs).x > 0.0);
