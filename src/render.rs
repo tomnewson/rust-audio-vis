@@ -322,21 +322,25 @@ fn fill_triangle(frame: &mut [u8], vertices: [[f32; 2]; 3], colour: [u8; 4], opa
             if !(has_negative && has_positive) {
                 let start = ((y * WIDTH + x) * 4) as usize;
                 if let Some(pixel) = frame.get_mut(start..start + 4) {
-                    let destination_alpha = pixel[3] as f32 / 255.0;
-                    let output_alpha = alpha + destination_alpha * (1.0 - alpha);
+                    if alpha >= 1.0 {
+                        pixel.copy_from_slice(&colour);
+                    } else {
+                        let destination_alpha = pixel[3] as f32 / 255.0;
+                        let output_alpha = alpha + destination_alpha * (1.0 - alpha);
 
-                    for channel in 0..3 {
-                        let source = colour[channel] as f32 / 255.0;
-                        let destination = pixel[channel] as f32 / 255.0;
-                        let output = if output_alpha > 0.0 {
-                            (source * alpha + destination * destination_alpha * (1.0 - alpha))
-                                / output_alpha
-                        } else {
-                            0.0
-                        };
-                        pixel[channel] = (output * 255.0).round() as u8;
+                        for channel in 0..3 {
+                            let source = colour[channel] as f32 / 255.0;
+                            let destination = pixel[channel] as f32 / 255.0;
+                            let output = if output_alpha > 0.0 {
+                                (source * alpha + destination * destination_alpha * (1.0 - alpha))
+                                    / output_alpha
+                            } else {
+                                0.0
+                            };
+                            pixel[channel] = (output * 255.0).round() as u8;
+                        }
+                        pixel[3] = (output_alpha * 255.0).round() as u8;
                     }
-                    pixel[3] = (output_alpha * 255.0).round() as u8;
                 }
             }
         }

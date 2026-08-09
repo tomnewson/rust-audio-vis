@@ -4,6 +4,7 @@ use crate::render::{HEIGHT, WIDTH, draw_boid, loudness_position, pitch_position}
 const MAX_BOIDS: usize = 500;
 const FIXED_TIME_STEP: f32 = 1.0 / 60.0;
 const MAX_FRAME_TIME: f32 = 0.1;
+const MAX_FIXED_STEPS_PER_FRAME: usize = 4;
 const LIFECYCLE_SECONDS: f32 = 0.35;
 const NEIGHBOUR_RADIUS: f32 = 60.0;
 const SEPARATION_RADIUS: f32 = 18.0;
@@ -109,6 +110,96 @@ struct BeatRipple {
     strength: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct StepEffect {
+    flock_acceleration: Vec2,
+    ripple_acceleration: Vec2,
+    ripple_pulse: f32,
+}
+
+struct SpatialGrid {
+    columns: usize,
+    rows: usize,
+    cell_width: f32,
+    cell_height: f32,
+    cells: Vec<Vec<usize>>,
+    neighbouring_cells: Vec<[usize; 9]>,
+}
+
+impl SpatialGrid {
+    fn new() -> Self {
+        let columns = ((WIDTH as f32 / NEIGHBOUR_RADIUS).floor() as usize).max(1);
+        let rows = ((HEIGHT as f32 / NEIGHBOUR_RADIUS).floor() as usize).max(1);
+        let cell_width = WIDTH as f32 / columns as f32;
+        let cell_height = HEIGHT as f32 / rows as f32;
+        let cell_count = columns * rows;
+        let expected_boids_per_cell = (MAX_BOIDS / cell_count).max(1);
+        let cells = (0..cell_count)
+            .map(|_| Vec::with_capacity(expected_boids_per_cell * 2))
+            .collect();
+        let mut neighbouring_cells = Vec::with_capacity(cell_count);
+
+        for row in 0..rows {
+            for column in 0..columns {
+                let mut neighbours = [0; 9];
+                let mut next = 0;
+                for row_offset in -1_isize..=1 {
+                    for column_offset in -1_isize..=1 {
+                        let neighbour_column =
+                            (column as isize + column_offset).rem_euclid(columns as isize) as usize;
+                        let neighbour_row =
+                            (row as isize + row_offset).rem_euclid(rows as isize) as usize;
+                        neighbours[next] = neighbour_row * columns + neighbour_column;
+                        next += 1;
+                    }
+                }
+                neighbouring_cells.push(neighbours);
+            }
+        }
+
+        Self {
+            columns,
+            rows,
+            cell_width,
+            cell_height,
+            cells,
+            neighbouring_cells,
+        }
+    }
+
+    fn rebuild(&mut self, boids: &[Boid]) {
+        for cell in &mut self.cells {
+            cell.clear();
+        }
+
+        for (index, boid) in boids.iter().enumerate() {
+            if boid.visibility > 0.0 {
+                let cell = self.cell_for_position(boid.position);
+                self.cells[cell].push(index);
+            }
+        }
+    }
+
+    fn cell_for_position(&self, position: Vec2) -> usize {
+        let x = position.x.rem_euclid(WIDTH as f32);
+        let y = position.y.rem_euclid(HEIGHT as f32);
+        let column = ((x / self.cell_width) as usize).min(self.columns - 1);
+        let row = ((y / self.cell_height) as usize).min(self.rows - 1);
+        row * self.columns + column
+    }
+
+    fn neighbouring_cells_for(&self, position: Vec2) -> &[usize; 9] {
+        &self.neighbouring_cells[self.cell_for_position(position)]
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SimulationUpdateStats {
+    pub fixed_steps: usize,
+    pub dropped_seconds: f32,
+    pub boid_count: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SimulationInputs {
     population_level: f32,
@@ -169,6 +260,8 @@ pub struct BoidSimulation {
     smoothed_speed: f32,
     last_beat_count: u64,
     ripples: Vec<BeatRipple>,
+    spatial_grid: SpatialGrid,
+    step_effects: Vec<StepEffect>,
 }
 
 impl BoidSimulation {
@@ -185,10 +278,16 @@ impl BoidSimulation {
             smoothed_speed: 30.0,
             last_beat_count: 0,
             ripples: Vec::with_capacity(MAX_ACTIVE_RIPPLES),
+            spatial_grid: SpatialGrid::new(),
+            step_effects: Vec::with_capacity(MAX_BOIDS),
         }
     }
 
-    pub fn update(&mut self, elapsed_seconds: f32, features: &AudioFeatures) {
+    pub fn update(
+        &mut self,
+        elapsed_seconds: f32,
+        features: &AudioFeatures,
+    ) -> SimulationUpdateStats {
         let elapsed_seconds = if elapsed_seconds.is_finite() {
             elapsed_seconds.clamp(0.0, MAX_FRAME_TIME)
         } else {
@@ -219,9 +318,26 @@ impl BoidSimulation {
         }
 
         self.accumulator += elapsed_seconds;
-        while self.accumulator >= FIXED_TIME_STEP {
+        let mut fixed_steps = 0;
+        while self.accumulator >= FIXED_TIME_STEP && fixed_steps < MAX_FIXED_STEPS_PER_FRAME {
             self.step(FIXED_TIME_STEP, inputs);
             self.accumulator -= FIXED_TIME_STEP;
+            fixed_steps += 1;
+        }
+
+        let dropped_seconds = if self.accumulator >= FIXED_TIME_STEP {
+            let complete_steps = (self.accumulator / FIXED_TIME_STEP).floor();
+            let dropped = complete_steps * FIXED_TIME_STEP;
+            self.accumulator -= dropped;
+            dropped
+        } else {
+            0.0
+        };
+
+        SimulationUpdateStats {
+            fixed_steps,
+            dropped_seconds,
+            boid_count: self.boids.len(),
         }
     }
 
@@ -294,30 +410,37 @@ impl BoidSimulation {
     }
 
     fn step(&mut self, elapsed_seconds: f32, inputs: SimulationInputs) {
-        let accelerations: Vec<Vec2> = (0..self.boids.len())
-            .map(|index| calculate_acceleration(index, &self.boids, inputs))
-            .collect();
-        let ripple_effects: Vec<(Vec2, f32)> = self
-            .boids
-            .iter()
-            .map(|boid| ripple_effect_at(boid.position, &self.ripples))
-            .collect();
+        self.spatial_grid.rebuild(&self.boids);
+        self.step_effects.clear();
+        for (index, boid) in self.boids.iter().enumerate() {
+            let (ripple_acceleration, ripple_pulse) =
+                ripple_effect_at(boid.position, &self.ripples);
+            self.step_effects.push(StepEffect {
+                flock_acceleration: calculate_acceleration(
+                    index,
+                    &self.boids,
+                    &self.spatial_grid,
+                    inputs,
+                ),
+                ripple_acceleration,
+                ripple_pulse,
+            });
+        }
 
-        for ((boid, acceleration), (ripple_acceleration, ripple_pulse)) in
-            self.boids.iter_mut().zip(accelerations).zip(ripple_effects)
-        {
+        for (boid, effect) in self.boids.iter_mut().zip(self.step_effects.iter().copied()) {
             boid.wander_angle += self.rng.range(-1.0, 1.0) * (0.4 + inputs.wander_strength / 30.0);
             let wander = Vec2::new(boid.wander_angle.cos(), boid.wander_angle.sin())
                 * inputs.wander_strength;
-            boid.velocity += (acceleration + wander).limited(inputs.max_force) * elapsed_seconds;
-            boid.velocity += ripple_acceleration * elapsed_seconds;
-            let speed_limit =
-                inputs.max_speed * (1.0 + ripple_pulse.clamp(0.0, 1.0) * RIPPLE_SPEED_HEADROOM);
+            boid.velocity +=
+                (effect.flock_acceleration + wander).limited(inputs.max_force) * elapsed_seconds;
+            boid.velocity += effect.ripple_acceleration * elapsed_seconds;
+            let speed_limit = inputs.max_speed
+                * (1.0 + effect.ripple_pulse.clamp(0.0, 1.0) * RIPPLE_SPEED_HEADROOM);
             boid.velocity = boid.velocity.limited(speed_limit.max(1.0));
             boid.position += boid.velocity * elapsed_seconds;
             boid.position.x = boid.position.x.rem_euclid(WIDTH as f32);
             boid.position.y = boid.position.y.rem_euclid(HEIGHT as f32);
-            boid.ripple_pulse = ripple_pulse.clamp(0.0, 1.0);
+            boid.ripple_pulse = effect.ripple_pulse.clamp(0.0, 1.0);
 
             let visibility_change = elapsed_seconds / LIFECYCLE_SECONDS;
             if boid.target_visible {
@@ -344,29 +467,37 @@ impl Default for BoidSimulation {
     }
 }
 
-fn calculate_acceleration(index: usize, boids: &[Boid], inputs: SimulationInputs) -> Vec2 {
+fn calculate_acceleration(
+    index: usize,
+    boids: &[Boid],
+    grid: &SpatialGrid,
+    inputs: SimulationInputs,
+) -> Vec2 {
     let boid = &boids[index];
     let mut separation = Vec2::ZERO;
     let mut alignment = Vec2::ZERO;
     let mut cohesion = Vec2::ZERO;
     let mut neighbours = 0_u32;
 
-    for (other_index, other) in boids.iter().enumerate() {
-        if index == other_index || other.visibility <= 0.0 {
-            continue;
-        }
+    for cell_index in grid.neighbouring_cells_for(boid.position) {
+        for &other_index in &grid.cells[*cell_index] {
+            if index == other_index {
+                continue;
+            }
+            let other = &boids[other_index];
 
-        let offset = toroidal_offset(boid.position, other.position);
-        let distance_squared = offset.length_squared();
-        if distance_squared > NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS {
-            continue;
-        }
+            let offset = toroidal_offset(boid.position, other.position);
+            let distance_squared = offset.length_squared();
+            if distance_squared > NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS {
+                continue;
+            }
 
-        neighbours += 1;
-        alignment += other.velocity;
-        cohesion += offset;
-        if distance_squared < SEPARATION_RADIUS * SEPARATION_RADIUS {
-            separation += offset * (-1.0 / distance_squared.max(1.0));
+            neighbours += 1;
+            alignment += other.velocity;
+            cohesion += offset;
+            if distance_squared < SEPARATION_RADIUS * SEPARATION_RADIUS {
+                separation += offset * (-1.0 / distance_squared.max(1.0));
+            }
         }
     }
 
@@ -494,6 +625,9 @@ impl XorShift64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
     use super::*;
     use crate::analysis::BandEnergies;
 
@@ -510,6 +644,50 @@ mod tests {
         }
     }
 
+    fn calculate_acceleration_brute_force(
+        index: usize,
+        boids: &[Boid],
+        inputs: SimulationInputs,
+    ) -> Vec2 {
+        let boid = &boids[index];
+        let mut separation = Vec2::ZERO;
+        let mut alignment = Vec2::ZERO;
+        let mut cohesion = Vec2::ZERO;
+        let mut neighbours = 0_u32;
+
+        for (other_index, other) in boids.iter().enumerate() {
+            if index == other_index || other.visibility <= 0.0 {
+                continue;
+            }
+
+            let offset = toroidal_offset(boid.position, other.position);
+            let distance_squared = offset.length_squared();
+            if distance_squared > NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS {
+                continue;
+            }
+
+            neighbours += 1;
+            alignment += other.velocity;
+            cohesion += offset;
+            if distance_squared < SEPARATION_RADIUS * SEPARATION_RADIUS {
+                separation += offset * (-1.0 / distance_squared.max(1.0));
+            }
+        }
+
+        if neighbours == 0 {
+            return Vec2::ZERO;
+        }
+
+        let count = neighbours as f32;
+        let separation = steering_force(separation, boid.velocity, inputs);
+        let alignment = steering_force(alignment / count, boid.velocity, inputs);
+        let cohesion = steering_force(cohesion / count, boid.velocity, inputs);
+        (separation * inputs.separation_weight
+            + alignment * inputs.alignment_weight
+            + cohesion * inputs.cohesion_weight)
+            .limited(inputs.max_force)
+    }
+
     #[test]
     fn population_maps_from_zero_to_maximum() {
         assert_eq!(
@@ -520,6 +698,97 @@ mod tests {
             SimulationInputs::from_audio(&loud_features()).target_population(),
             MAX_BOIDS
         );
+    }
+
+    #[test]
+    fn spatial_grid_matches_brute_force_flocking() {
+        let mut rng = XorShift64::new(99);
+        let inputs = SimulationInputs::from_audio(&loud_features());
+        let mut boids: Vec<Boid> = (0..200)
+            .map(|_| {
+                let mut boid = random_boid(&mut rng, inputs.max_speed);
+                boid.visibility = 1.0;
+                boid
+            })
+            .collect();
+        boids[0].position = Vec2::new(2.0, 2.0);
+        boids[1].position = Vec2::new(WIDTH as f32 - 2.0, HEIGHT as f32 - 2.0);
+
+        let mut grid = SpatialGrid::new();
+        grid.rebuild(&boids);
+        for index in 0..boids.len() {
+            let grid_result = calculate_acceleration(index, &boids, &grid, inputs);
+            let brute_result = calculate_acceleration_brute_force(index, &boids, inputs);
+            assert!((grid_result.x - brute_result.x).abs() < 0.01);
+            assert!((grid_result.y - brute_result.y).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn spatial_grid_has_nine_unique_neighbouring_cells() {
+        let grid = SpatialGrid::new();
+        for neighbouring_cells in &grid.neighbouring_cells {
+            let unique: HashSet<usize> = neighbouring_cells.iter().copied().collect();
+            assert_eq!(unique.len(), 9);
+        }
+    }
+
+    #[test]
+    fn catch_up_work_is_bounded() {
+        let mut simulation = BoidSimulation::with_seed(100);
+        let stats = simulation.update(MAX_FRAME_TIME, &AudioFeatures::default());
+
+        assert_eq!(stats.fixed_steps, MAX_FIXED_STEPS_PER_FRAME);
+        assert!(stats.dropped_seconds >= FIXED_TIME_STEP);
+        assert!(simulation.accumulator < FIXED_TIME_STEP);
+    }
+
+    #[test]
+    #[ignore = "manual simulation performance benchmark"]
+    fn benchmark_population_sizes() {
+        for population in [100, 250, 500] {
+            let mut simulation = BoidSimulation::with_seed(population as u64);
+            let inputs = SimulationInputs::from_audio(&loud_features());
+            simulation.reconcile_population(population, inputs.max_speed);
+            for boid in &mut simulation.boids {
+                boid.visibility = 1.0;
+            }
+
+            for _ in 0..30 {
+                simulation.step(FIXED_TIME_STEP, inputs);
+            }
+
+            const ITERATIONS: usize = 100;
+            let grid_started = Instant::now();
+            for _ in 0..ITERATIONS {
+                simulation.spatial_grid.rebuild(&simulation.boids);
+                for index in 0..simulation.boids.len() {
+                    std::hint::black_box(calculate_acceleration(
+                        index,
+                        &simulation.boids,
+                        &simulation.spatial_grid,
+                        inputs,
+                    ));
+                }
+            }
+            let grid_ms = grid_started.elapsed().as_secs_f64() * 1_000.0 / ITERATIONS as f64;
+
+            let brute_started = Instant::now();
+            for _ in 0..ITERATIONS {
+                for index in 0..simulation.boids.len() {
+                    std::hint::black_box(calculate_acceleration_brute_force(
+                        index,
+                        &simulation.boids,
+                        inputs,
+                    ));
+                }
+            }
+            let brute_ms = brute_started.elapsed().as_secs_f64() * 1_000.0 / ITERATIONS as f64;
+            eprintln!(
+                "{population} boids: grid {grid_ms:.3} ms, brute {brute_ms:.3} ms, {:.1}x faster",
+                brute_ms / grid_ms
+            );
+        }
     }
 
     #[test]
@@ -710,7 +979,9 @@ mod tests {
             cohesion_weight: 0.0,
             wander_strength: 0.0,
         };
-        assert!(calculate_acceleration(0, &boids, inputs).x < 0.0);
-        assert!(calculate_acceleration(1, &boids, inputs).x > 0.0);
+        let mut grid = SpatialGrid::new();
+        grid.rebuild(&boids);
+        assert!(calculate_acceleration(0, &boids, &grid, inputs).x < 0.0);
+        assert!(calculate_acceleration(1, &boids, &grid, inputs).x > 0.0);
     }
 }

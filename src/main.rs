@@ -25,6 +25,73 @@ use winit::window::{Window, WindowId};
 struct LaunchOptions {
     demo_mode: bool,
     input_mode: InputMode,
+    show_stats: bool,
+}
+
+struct PerformanceStats {
+    interval_started: Instant,
+    simulation_ms: Vec<f64>,
+    rendering_ms: Vec<f64>,
+    frame_ms: Vec<f64>,
+    fixed_steps: usize,
+    dropped_seconds: f32,
+    boid_count: usize,
+}
+
+impl PerformanceStats {
+    fn new() -> Self {
+        Self {
+            interval_started: Instant::now(),
+            simulation_ms: Vec::with_capacity(120),
+            rendering_ms: Vec::with_capacity(120),
+            frame_ms: Vec::with_capacity(120),
+            fixed_steps: 0,
+            dropped_seconds: 0.0,
+            boid_count: 0,
+        }
+    }
+
+    fn record(
+        &mut self,
+        simulation_ms: f64,
+        rendering_ms: f64,
+        frame_ms: f64,
+        simulation: simulation::SimulationUpdateStats,
+    ) {
+        self.simulation_ms.push(simulation_ms);
+        self.rendering_ms.push(rendering_ms);
+        self.frame_ms.push(frame_ms);
+        self.fixed_steps += simulation.fixed_steps;
+        self.dropped_seconds += simulation.dropped_seconds;
+        self.boid_count = simulation.boid_count;
+
+        let interval_seconds = self.interval_started.elapsed().as_secs_f64();
+        if interval_seconds < 1.0 {
+            return;
+        }
+
+        let frame_count = self.frame_ms.len();
+        let fps = frame_count as f64 / interval_seconds;
+        let steps_per_frame = self.fixed_steps as f64 / frame_count.max(1) as f64;
+        eprintln!(
+            "perf boids={} fps={fps:.1} frame={:.2}/{:.2}ms sim={:.2}/{:.2}ms render={:.2}/{:.2}ms steps/frame={steps_per_frame:.2} dropped={:.2}ms",
+            self.boid_count,
+            average(&self.frame_ms),
+            percentile(&mut self.frame_ms, 0.95),
+            average(&self.simulation_ms),
+            percentile(&mut self.simulation_ms, 0.95),
+            average(&self.rendering_ms),
+            percentile(&mut self.rendering_ms, 0.95),
+            self.dropped_seconds as f64 * 1_000.0,
+        );
+
+        self.interval_started = Instant::now();
+        self.simulation_ms.clear();
+        self.rendering_ms.clear();
+        self.frame_ms.clear();
+        self.fixed_steps = 0;
+        self.dropped_seconds = 0.0;
+    }
 }
 
 struct App {
@@ -37,12 +104,13 @@ struct App {
     audio_receiver: Option<Receiver<AudioMessage>>,
     audio_error: Option<String>,
     demo_mode: bool,
+    performance_stats: Option<PerformanceStats>,
     started_at: Instant,
     last_frame_at: Instant,
 }
 
 impl App {
-    fn new(demo_mode: bool, input_mode: InputMode) -> Self {
+    fn new(demo_mode: bool, input_mode: InputMode, show_stats: bool) -> Self {
         let (audio_worker, audio_receiver) = if demo_mode {
             (None, None)
         } else {
@@ -60,6 +128,7 @@ impl App {
             audio_receiver,
             audio_error: None,
             demo_mode,
+            performance_stats: show_stats.then(PerformanceStats::new),
             started_at: Instant::now(),
             last_frame_at: Instant::now(),
         }
@@ -131,6 +200,7 @@ impl App {
     }
 
     fn draw(&mut self) -> Result<(), pixels::Error> {
+        let frame_started = Instant::now();
         let now = Instant::now();
         let elapsed_seconds = now.duration_since(self.last_frame_at).as_secs_f32();
         self.last_frame_at = now;
@@ -142,12 +212,25 @@ impl App {
         }
 
         let colour = self.colour_smoother.update(elapsed_seconds, &self.features);
-        self.simulation.update(elapsed_seconds, &self.features);
+        let simulation_started = Instant::now();
+        let simulation_stats = self.simulation.update(elapsed_seconds, &self.features);
+        let simulation_ms = simulation_started.elapsed().as_secs_f64() * 1_000.0;
 
+        let rendering_started = Instant::now();
         if let Some(pixels) = self.pixels.as_mut() {
             clear_frame(pixels.frame_mut());
             self.simulation.draw(pixels.frame_mut(), colour);
             pixels.render()?;
+        }
+        let rendering_ms = rendering_started.elapsed().as_secs_f64() * 1_000.0;
+
+        if let Some(stats) = &mut self.performance_stats {
+            stats.record(
+                simulation_ms,
+                rendering_ms,
+                frame_started.elapsed().as_secs_f64() * 1_000.0,
+                simulation_stats,
+            );
         }
 
         Ok(())
@@ -279,12 +362,14 @@ fn parse_launch_options(
     let mut options = LaunchOptions {
         demo_mode: false,
         input_mode: InputMode::Loopback,
+        show_stats: false,
     };
     let mut arguments = arguments.into_iter();
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--demo" => options.demo_mode = true,
+            "--stats" => options.show_stats = true,
             "--input" => {
                 let value = arguments
                     .next()
@@ -296,7 +381,7 @@ fn parse_launch_options(
                     options.input_mode = parse_input_mode(value)?;
                 } else {
                     return Err(format!(
-                        "unknown argument '{argument}'; use --input loopback, --input mic, or --demo"
+                        "unknown argument '{argument}'; use --input loopback, --input mic, --demo, or --stats"
                     ));
                 }
             }
@@ -316,10 +401,23 @@ fn parse_input_mode(value: &str) -> Result<InputMode, String> {
     }
 }
 
+fn average(samples: &[f64]) -> f64 {
+    samples.iter().sum::<f64>() / samples.len().max(1) as f64
+}
+
+fn percentile(samples: &mut [f64], percentile: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    samples.sort_by(f64::total_cmp);
+    let index = ((samples.len() - 1) as f64 * percentile).round() as usize;
+    samples[index]
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_launch_options(std::env::args().skip(1))?;
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(options.demo_mode, options.input_mode);
+    let mut app = App::new(options.demo_mode, options.input_mode, options.show_stats);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -339,6 +437,7 @@ mod tests {
             LaunchOptions {
                 demo_mode: false,
                 input_mode: InputMode::Loopback,
+                show_stats: false,
             }
         );
     }
@@ -363,5 +462,14 @@ mod tests {
     fn invalid_input_is_rejected() {
         assert!(parse_launch_options(arguments(&["--input", "file"])).is_err());
         assert!(parse_launch_options(arguments(&["--input"])).is_err());
+    }
+
+    #[test]
+    fn performance_stats_can_be_enabled() {
+        assert!(
+            parse_launch_options(arguments(&["--stats"]))
+                .unwrap()
+                .show_stats
+        );
     }
 }
