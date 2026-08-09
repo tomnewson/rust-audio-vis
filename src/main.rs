@@ -192,7 +192,7 @@ impl App {
             self.audio_error = Some(error);
 
             if let Some(window) = &self.window {
-                window.set_title("Rust Audio Visualiser — Audio unavailable");
+                window.set_title("raesboida (audio unavailable)");
             }
         } else if let Some(features) = newest_features {
             self.features = features;
@@ -259,11 +259,11 @@ impl ApplicationHandler for App {
         }
 
         let title = if self.demo_mode {
-            "Rust Audio Visualiser — Demo"
+            "raesboida (demo)"
         } else if self.audio_error.is_some() {
-            "Rust Audio Visualiser — Audio unavailable"
+            "raesboida (audio unavailable)"
         } else {
-            "Rust Audio Visualiser"
+            "raesboida"
         };
 
         let attributes = Window::default_attributes()
