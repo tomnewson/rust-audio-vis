@@ -24,10 +24,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: visualiser.exe
             asset_name: visualiser-windows-x86_64
-          - os: macos-13
-            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
             artifact_name: visualiser
-            asset_name: visualiser-macos-x86_64
+            asset_name: visualiser-macos-arm64
 
     steps:
       - name: Checkout
@@ -82,4 +82,4 @@ jobs:
             "Automated release for commit ${{ github.sha }} on \`main\`." \
             artifacts/visualiser-linux-x86_64/visualiser \
             artifacts/visualiser-windows-x86_64/visualiser.exe \
-            artifacts/visualiser-macos-x86_64/visualiser
+            artifacts/visualiser-macos-arm64/visualiser
