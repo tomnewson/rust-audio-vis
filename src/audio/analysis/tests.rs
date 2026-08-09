@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn sine_wave(frequency_hz: f32, amplitude: f32, sample_count: usize) -> Vec<f32> {

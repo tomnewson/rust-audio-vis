@@ -18,7 +18,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 #[derive(Debug, PartialEq, Eq)]
 struct LaunchOptions {
@@ -26,6 +26,7 @@ struct LaunchOptions {
     input_mode: InputMode,
     background_mode: BackgroundMode,
     show_stats: bool,
+    fullscreen: bool,
 }
 
 struct PerformanceStats {
@@ -122,6 +123,7 @@ struct App {
     demo_mode: bool,
     background_mode: BackgroundMode,
     performance_stats: Option<PerformanceStats>,
+    fullscreen: bool,
     started_at: Instant,
     last_frame_at: Instant,
 }
@@ -132,6 +134,7 @@ impl App {
         input_mode: InputMode,
         background_mode: BackgroundMode,
         show_stats: bool,
+        fullscreen: bool,
     ) -> Self {
         let (audio_worker, audio_receiver) = if demo_mode {
             (None, None)
@@ -154,6 +157,7 @@ impl App {
             demo_mode,
             background_mode,
             performance_stats: show_stats.then(PerformanceStats::new),
+            fullscreen,
             started_at: Instant::now(),
             last_frame_at: Instant::now(),
         }
@@ -301,6 +305,28 @@ impl App {
 
     fn toggle_background(&mut self) {
         self.background_mode = self.background_mode.next();
+        self.update_cursor_hittest();
+    }
+
+    fn toggle_fullscreen(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+
+        self.fullscreen = !self.fullscreen;
+        let fullscreen = self.fullscreen.then(|| Fullscreen::Borderless(None));
+        window.set_fullscreen(fullscreen);
+    }
+
+    fn update_cursor_hittest(&self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+
+        let hittest = self.background_mode != BackgroundMode::Transparent;
+        if let Err(error) = window.set_cursor_hittest(hittest) {
+            eprintln!("Could not update window click-through mode: {error}");
+        }
     }
 }
 
@@ -322,6 +348,7 @@ impl ApplicationHandler for App {
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_transparent(true)
+            .with_fullscreen(self.fullscreen.then(|| Fullscreen::Borderless(None)))
             .with_inner_size(LogicalSize::new(
                 INITIAL_WINDOW_WIDTH as f64,
                 INITIAL_WINDOW_HEIGHT as f64,
@@ -379,6 +406,7 @@ impl ApplicationHandler for App {
         self.pixels = Some(pixels);
         self.renderer = Some(renderer);
         self.window = Some(window);
+        self.update_cursor_hittest();
     }
 
     fn window_event(
@@ -431,6 +459,13 @@ impl ApplicationHandler for App {
             {
                 self.toggle_background();
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyF) =>
+            {
+                self.toggle_fullscreen();
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     eprintln!("Could not draw the next frame: {error}");
@@ -456,6 +491,7 @@ fn parse_launch_options(
         input_mode: InputMode::Loopback,
         background_mode: BackgroundMode::Transparent,
         show_stats: false,
+        fullscreen: false,
     };
     let mut arguments = arguments.into_iter();
 
@@ -463,6 +499,7 @@ fn parse_launch_options(
         match argument.as_str() {
             "--demo" => options.demo_mode = true,
             "--stats" => options.show_stats = true,
+            "--fullscreen" => options.fullscreen = true,
             "--input" => {
                 let value = arguments
                     .next()
@@ -482,7 +519,7 @@ fn parse_launch_options(
                     options.background_mode = parse_background_mode(value)?;
                 } else {
                     return Err(format!(
-                        "unknown argument '{argument}'; use --input loopback|mic, --background black|white|transparent|boid, --demo, or --stats"
+                        "unknown argument '{argument}'; use --input loopback|mic, --background black|white|transparent|boid, --demo, --stats, or --fullscreen"
                     ));
                 }
             }
@@ -535,6 +572,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         options.input_mode,
         options.background_mode,
         options.show_stats,
+        options.fullscreen,
     );
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -557,6 +595,7 @@ mod tests {
                 input_mode: InputMode::Loopback,
                 background_mode: BackgroundMode::Transparent,
                 show_stats: false,
+                fullscreen: false,
             }
         );
     }
@@ -623,6 +662,15 @@ mod tests {
             parse_launch_options(arguments(&["--stats"]))
                 .unwrap()
                 .show_stats
+        );
+    }
+
+    #[test]
+    fn fullscreen_can_be_enabled_at_launch() {
+        assert!(
+            parse_launch_options(arguments(&["--fullscreen"]))
+                .unwrap()
+                .fullscreen
         );
     }
 }

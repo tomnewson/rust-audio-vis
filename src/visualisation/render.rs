@@ -38,10 +38,10 @@ pub enum BackgroundMode {
 impl BackgroundMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Black => Self::White,
-            Self::White => Self::Transparent,
             Self::Transparent => Self::Boid,
-            Self::Boid => Self::Black,
+            Self::Boid => Self::White,
+            Self::White => Self::Black,
+            Self::Black => Self::Transparent,
         }
     }
 
