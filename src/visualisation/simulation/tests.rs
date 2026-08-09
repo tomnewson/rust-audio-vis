@@ -259,21 +259,28 @@ fn resizing_preserves_relative_positions_and_rebuilds_the_grid() {
 }
 
 #[test]
-fn each_new_beat_spawns_one_ripple() {
+fn each_new_beat_spawns_a_primary_and_two_trailing_ripples() {
     let mut simulation = BoidSimulation::with_seed(3);
     let mut features = loud_features();
     features.beat_count = 1;
     features.beat_strength = 0.8;
 
     simulation.update(FIXED_TIME_STEP, &features);
-    assert_eq!(simulation.ripples.len(), 1);
+    assert_eq!(simulation.ripples.len(), 3);
+    assert_eq!(simulation.ripples[0].delay_seconds, 0.0);
+    assert!((simulation.ripples[0].strength - 0.4).abs() < f32::EPSILON);
+    assert_eq!(simulation.ripples[0].width, RIPPLE_WIDTH);
+    assert!(simulation.ripples[1].delay_seconds > 0.0);
+    assert!(simulation.ripples[1].strength < simulation.ripples[0].strength);
+    assert!(simulation.ripples[1].width < simulation.ripples[0].width);
+    assert_eq!(simulation.ripples[2].force_multiplier, 0.0);
 
     simulation.update(FIXED_TIME_STEP, &features);
-    assert_eq!(simulation.ripples.len(), 1);
+    assert_eq!(simulation.ripples.len(), 3);
 
     features.beat_count = 2;
     simulation.update(FIXED_TIME_STEP, &features);
-    assert_eq!(simulation.ripples.len(), 2);
+    assert_eq!(simulation.ripples.len(), 6);
 }
 
 #[test]
@@ -282,6 +289,9 @@ fn ripple_only_affects_boids_at_its_wavefront() {
         origin: Vec2::new(100.0, 100.0),
         radius: 50.0,
         strength: 1.0,
+        width: RIPPLE_WIDTH,
+        force_multiplier: 1.0,
+        delay_seconds: 0.0,
     };
 
     let (acceleration, pulse) =
@@ -304,6 +314,9 @@ fn ripple_crosses_the_toroidal_edge() {
         origin: Vec2::new(default_canvas().width - 10.0, 100.0),
         radius: 20.0,
         strength: 1.0,
+        width: RIPPLE_WIDTH,
+        force_multiplier: 1.0,
+        delay_seconds: 0.0,
     };
 
     let (acceleration, pulse) =
@@ -319,6 +332,9 @@ fn stronger_beats_create_stronger_ripple_forces() {
         origin: Vec2::new(100.0, 100.0),
         radius: 50.0,
         strength: 0.5,
+        width: RIPPLE_WIDTH,
+        force_multiplier: 1.0,
+        delay_seconds: 0.0,
     };
     let strong = BeatRipple {
         strength: 1.0,
@@ -338,6 +354,9 @@ fn ripple_is_removed_after_crossing_the_canvas() {
         origin: Vec2::ZERO,
         radius: maximum_toroidal_distance(default_canvas()) + RIPPLE_WIDTH * 0.5,
         strength: 1.0,
+        width: RIPPLE_WIDTH,
+        force_multiplier: 1.0,
+        delay_seconds: 0.0,
     });
 
     simulation.step(

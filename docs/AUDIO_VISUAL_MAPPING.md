@@ -197,21 +197,21 @@ The resulting `tempo` value competes with `onset_pace`; whichever is higher beco
 
 ### Beat events and beat strength
 
-A change in `beat_count` creates one ripple. The ripple begins at a randomly selected visible boid and travels across the wrapping canvas.
+A change in `beat_count` creates a three-ring ripple at a randomly selected visible boid. The main ring begins immediately; two trailing rings begin from the same point after `70 ms` and `140 ms`.
 
-Beat strength is clamped to `0.0–1.0`, with a minimum ripple strength of `0.6`. Stronger beats have a stronger effect.
+Beat strength is clamped to `0.0–1.0`, with a minimum raw main-ring strength of `0.6`. All ring intensity is then scaled to `50%`, so the main ring's final strength is `0.3–0.5`. Stronger beats have a stronger effect. The first trailing ring uses `60%` of the main-ring strength and the second uses `30%`.
 
-The ripple has these fixed properties:
+All rings travel at `360 pixels/second`. Their other properties are:
 
-- Travel speed: `360 pixels/second`.
-- Wavefront width: `40 pixels`.
-- Maximum outward acceleration: `300 pixels/second²`.
+- Main ring: `40 pixels` wide with up to `300 pixels/second²` outward acceleration.
+- First trailing ring: `30 pixels` wide with `25%` of the main ring's acceleration.
+- Second trailing ring: `22 pixels` wide and visual-only; it adds no outward acceleration.
 - Maximum temporary speed-limit increase: `50%`.
 - Maximum temporary boid-size increase: `60%`.
 - Pulse lightness boost: `+0.12` OKLCH lightness.
 - Pulse chroma boost: `+0.04` OKLCH chroma.
 
-Its influence follows a smooth cosine envelope across the wavefront. A boid is affected only while the wavefront passes over it.
+Each ring follows a smooth cosine envelope across its wavefront. A boid is affected only while a wavefront passes over it.
 
 A beat also accelerates colour smoothing. Its initial response is:
 

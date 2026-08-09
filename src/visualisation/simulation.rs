@@ -16,7 +16,13 @@ const RIPPLE_WIDTH: f32 = 40.0;
 const RIPPLE_FORCE: f32 = 300.0;
 const RIPPLE_SPEED_HEADROOM: f32 = 0.5;
 const MIN_RIPPLE_STRENGTH: f32 = 0.6;
-const MAX_ACTIVE_RIPPLES: usize = 6;
+const RIPPLE_INTENSITY_SCALE: f32 = 0.5;
+const TRAILING_RIPPLES: [(f32, f32, f32, f32); 2] = [
+    // Delay, strength multiplier, width multiplier, force multiplier.
+    (0.07, 0.60, 0.75, 0.25),
+    (0.14, 0.30, 0.55, 0.0),
+];
+const MAX_ACTIVE_RIPPLES: usize = 18;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Vec2 {
@@ -112,6 +118,9 @@ struct BeatRipple {
     origin: Vec2,
     radius: f32,
     strength: f32,
+    width: f32,
+    force_multiplier: f32,
+    delay_seconds: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -444,14 +453,35 @@ impl BoidSimulation {
             .map(|boid| boid.position)
             .expect("the visible boid count was checked");
 
+        let strength = finite_unit(strength).max(MIN_RIPPLE_STRENGTH) * RIPPLE_INTENSITY_SCALE;
+        self.push_ripple(BeatRipple {
+            origin,
+            radius: 0.0,
+            strength,
+            width: RIPPLE_WIDTH,
+            force_multiplier: 1.0,
+            delay_seconds: 0.0,
+        });
+
+        for (delay_seconds, strength_multiplier, width_multiplier, force_multiplier) in
+            TRAILING_RIPPLES
+        {
+            self.push_ripple(BeatRipple {
+                origin,
+                radius: 0.0,
+                strength: strength * strength_multiplier,
+                width: RIPPLE_WIDTH * width_multiplier,
+                force_multiplier,
+                delay_seconds,
+            });
+        }
+    }
+
+    fn push_ripple(&mut self, ripple: BeatRipple) {
         if self.ripples.len() == MAX_ACTIVE_RIPPLES {
             self.ripples.remove(0);
         }
-        self.ripples.push(BeatRipple {
-            origin,
-            radius: 0.0,
-            strength: finite_unit(strength).max(MIN_RIPPLE_STRENGTH),
-        });
+        self.ripples.push(ripple);
     }
 
     fn step(&mut self, elapsed_seconds: f32, inputs: SimulationInputs) {
@@ -498,11 +528,13 @@ impl BoidSimulation {
         self.boids
             .retain(|boid| boid.target_visible || boid.visibility > 0.0);
         for ripple in &mut self.ripples {
-            ripple.radius += RIPPLE_SPEED * elapsed_seconds;
+            let propagation_seconds = (elapsed_seconds - ripple.delay_seconds).max(0.0);
+            ripple.delay_seconds = (ripple.delay_seconds - elapsed_seconds).max(0.0);
+            ripple.radius += RIPPLE_SPEED * propagation_seconds;
         }
-        let maximum_radius = maximum_toroidal_distance(self.canvas) + RIPPLE_WIDTH * 0.5;
-        self.ripples
-            .retain(|ripple| ripple.radius <= maximum_radius);
+        self.ripples.retain(|ripple| {
+            ripple.radius <= maximum_toroidal_distance(self.canvas) + ripple.width * 0.5
+        });
     }
 }
 
@@ -564,9 +596,12 @@ fn calculate_acceleration(
 fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple], canvas: CanvasSize) -> (Vec2, f32) {
     let mut acceleration = Vec2::ZERO;
     let mut visual_pulse = 0.0_f32;
-    let half_width = RIPPLE_WIDTH * 0.5;
-
     for ripple in ripples {
+        if ripple.delay_seconds > 0.0 {
+            continue;
+        }
+
+        let half_width = ripple.width * 0.5;
         let offset = toroidal_offset(ripple.origin, position, canvas);
         let distance = offset.length();
         let distance_from_front = (distance - ripple.radius).abs();
@@ -577,7 +612,8 @@ fn ripple_effect_at(position: Vec2, ripples: &[BeatRipple], canvas: CanvasSize) 
         let phase = distance_from_front / half_width;
         let envelope = 0.5 + 0.5 * (std::f32::consts::PI * phase).cos();
         let influence = envelope * ripple.strength;
-        acceleration += offset.normalized_or_zero() * (RIPPLE_FORCE * influence);
+        acceleration +=
+            offset.normalized_or_zero() * (RIPPLE_FORCE * influence * ripple.force_multiplier);
         visual_pulse = visual_pulse.max(influence);
     }
 
