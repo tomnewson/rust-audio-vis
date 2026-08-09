@@ -1,19 +1,15 @@
-mod analysis;
 mod audio;
-mod render;
-mod simulation;
+mod visualisation;
 
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use analysis::AudioFeatures;
-use audio::{AudioMessage, AudioWorker, InputMode};
+use audio::{AudioFeatures, AudioMessage, AudioWorker, BandEnergies, InputMode};
 use pixels::wgpu::{Color, CompositeAlphaMode};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
-use render::{ColourSmoother, HEIGHT, WIDTH, clear_frame};
-use simulation::BoidSimulation;
+use visualisation::{BoidSimulation, ColourSmoother, HEIGHT, WIDTH, clear_frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -56,7 +52,7 @@ impl PerformanceStats {
         simulation_ms: f64,
         rendering_ms: f64,
         frame_ms: f64,
-        simulation: simulation::SimulationUpdateStats,
+        simulation: visualisation::SimulationUpdateStats,
     ) {
         self.simulation_ms.push(simulation_ms);
         self.rendering_ms.push(rendering_ms);
@@ -150,7 +146,7 @@ impl App {
             dominant_hz: Some(frequency),
             spectral_flux: onset_strength,
             spectral_flatness: ((time * 0.23).sin() + 1.0) * 0.25,
-            bands: analysis::BandEnergies {
+            bands: BandEnergies {
                 low: low / band_total,
                 mid: mid / band_total,
                 high: high / band_total,
