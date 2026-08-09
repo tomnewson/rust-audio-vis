@@ -491,7 +491,7 @@ fn parse_launch_options(
     let mut options = LaunchOptions {
         demo_mode: false,
         input_mode: InputMode::Loopback,
-        background_mode: BackgroundMode::Transparent,
+        background_mode: BackgroundMode::Boid,
         show_stats: false,
         fullscreen: false,
     };
@@ -595,7 +595,7 @@ mod tests {
             LaunchOptions {
                 demo_mode: false,
                 input_mode: InputMode::Loopback,
-                background_mode: BackgroundMode::Transparent,
+                background_mode: BackgroundMode::Boid,
                 show_stats: false,
                 fullscreen: false,
             }

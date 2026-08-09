@@ -30,18 +30,18 @@ const MAX_PALETTE_CHROMA: f32 = 0.30;
 pub enum BackgroundMode {
     Black,
     White,
-    #[default]
     Transparent,
+    #[default]
     Boid,
 }
 
 impl BackgroundMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Transparent => Self::Boid,
-            Self::Boid => Self::White,
+            Self::Boid => Self::Transparent,
+            Self::Transparent => Self::White,
             Self::White => Self::Black,
-            Self::Black => Self::Transparent,
+            Self::Black => Self::Boid,
         }
     }
 
