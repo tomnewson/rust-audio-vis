@@ -12,7 +12,7 @@ use analysis::AudioFeatures;
 use audio::{AudioMessage, AudioWorker, InputMode};
 use pixels::wgpu::{Color, CompositeAlphaMode};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
-use render::{HEIGHT, WIDTH, clear_frame, colour_from_audio};
+use render::{ColourSmoother, HEIGHT, WIDTH, clear_frame};
 use simulation::BoidSimulation;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -31,6 +31,7 @@ struct App {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     features: AudioFeatures,
+    colour_smoother: ColourSmoother,
     simulation: BoidSimulation,
     audio_worker: Option<AudioWorker>,
     audio_receiver: Option<Receiver<AudioMessage>>,
@@ -53,6 +54,7 @@ impl App {
             window: None,
             pixels: None,
             features: AudioFeatures::default(),
+            colour_smoother: ColourSmoother::new(),
             simulation: BoidSimulation::new(),
             audio_worker,
             audio_receiver,
@@ -139,7 +141,7 @@ impl App {
             self.receive_audio();
         }
 
-        let colour = colour_from_audio(self.features.rms, self.features.dominant_hz);
+        let colour = self.colour_smoother.update(elapsed_seconds, &self.features);
         self.simulation.update(elapsed_seconds, &self.features);
 
         if let Some(pixels) = self.pixels.as_mut() {

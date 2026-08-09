@@ -1,7 +1,7 @@
 use crate::analysis::AudioFeatures;
 use crate::render::{HEIGHT, WIDTH, draw_boid, loudness_position, pitch_position};
 
-const MAX_BOIDS: usize = 250;
+const MAX_BOIDS: usize = 500;
 const FIXED_TIME_STEP: f32 = 1.0 / 60.0;
 const MAX_FRAME_TIME: f32 = 0.1;
 const LIFECYCLE_SECONDS: f32 = 0.35;

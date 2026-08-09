@@ -1,8 +1,9 @@
+use crate::analysis::AudioFeatures;
+
 pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 480;
 
 const BACKGROUND: [u8; 4] = [0, 0, 0, 0];
-const QUIET_COLOUR: [u8; 4] = [0, 0, 0, 255];
 const MIN_DBFS: f32 = -50.0;
 const MAX_DBFS: f32 = -10.0;
 const MIN_FREQUENCY_HZ: f32 = 80.0;
@@ -12,25 +13,123 @@ const MAX_LIGHTNESS: f32 = 0.85;
 const MAX_CHROMA: f32 = 0.24;
 const MIN_HUE_DEGREES: f32 = 20.0;
 const MAX_HUE_DEGREES: f32 = 320.0;
+const SLOW_COLOUR_TAU_SECONDS: f32 = 0.32;
+const FAST_COLOUR_TAU_SECONDS: f32 = 0.055;
+const BEAT_RESPONSE_SECONDS: f32 = 0.22;
 
-/// Maps loudness and dominant frequency to an OKLCH colour, then converts it
-/// to the sRGB bytes used by the pixel buffer.
-///
-/// Loudness controls chroma. Pitch controls both lightness and hue, using a
-/// logarithmic frequency scale so each musical octave has similar visual room.
-pub fn colour_from_audio(rms: f32, dominant_hz: Option<f32>) -> [u8; 4] {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OklchColour {
+    lightness: f32,
+    chroma: f32,
+    hue_degrees: f32,
+}
+
+impl OklchColour {
+    const BLACK: Self = Self {
+        lightness: 0.0,
+        chroma: 0.0,
+        hue_degrees: MIN_HUE_DEGREES,
+    };
+
+    fn to_rgba(self) -> [u8; 4] {
+        let [red, green, blue] = oklch_to_srgb(self.lightness, self.chroma, self.hue_degrees);
+        [red, green, blue, 255]
+    }
+}
+
+pub struct ColourSmoother {
+    current: OklchColour,
+    last_beat_count: u64,
+    beat_response: f32,
+}
+
+impl ColourSmoother {
+    pub fn new() -> Self {
+        Self {
+            current: OklchColour::BLACK,
+            last_beat_count: 0,
+            beat_response: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, elapsed_seconds: f32, features: &AudioFeatures) -> [u8; 4] {
+        let elapsed_seconds = if elapsed_seconds.is_finite() {
+            elapsed_seconds.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+
+        if features.beat_count != self.last_beat_count {
+            self.beat_response = self
+                .beat_response
+                .max(0.5 + finite_unit(features.beat_strength) * 0.5);
+            self.last_beat_count = features.beat_count;
+        }
+
+        let responsiveness = finite_unit(features.spectral_flux).max(self.beat_response);
+        let tau = SLOW_COLOUR_TAU_SECONDS
+            + responsiveness * (FAST_COLOUR_TAU_SECONDS - SLOW_COLOUR_TAU_SECONDS);
+        let interpolation = if elapsed_seconds > 0.0 {
+            1.0 - (-elapsed_seconds / tau).exp()
+        } else {
+            0.0
+        };
+        let target = oklch_from_audio(features.rms, features.dominant_hz);
+
+        if target.chroma > 0.000_1
+            && (self.current.chroma <= 0.000_1 || self.current.lightness <= 0.000_1)
+        {
+            self.current.hue_degrees = target.hue_degrees;
+        } else if target.chroma > 0.000_1 {
+            self.current.hue_degrees = (self.current.hue_degrees
+                + shortest_hue_delta(self.current.hue_degrees, target.hue_degrees) * interpolation)
+                .rem_euclid(360.0);
+        }
+
+        self.current.lightness += (target.lightness - self.current.lightness) * interpolation;
+        self.current.chroma += (target.chroma - self.current.chroma) * interpolation;
+        self.beat_response =
+            (self.beat_response - elapsed_seconds / BEAT_RESPONSE_SECONDS).max(0.0);
+
+        self.current.to_rgba()
+    }
+}
+
+impl Default for ColourSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Maps loudness and dominant frequency to an OKLCH target. Loudness controls
+/// chroma, while pitch controls lightness and hue on a logarithmic scale.
+fn oklch_from_audio(rms: f32, dominant_hz: Option<f32>) -> OklchColour {
     let Some(frequency) = dominant_hz.filter(|frequency| frequency.is_finite() && *frequency > 0.0)
     else {
-        return QUIET_COLOUR;
+        return OklchColour::BLACK;
     };
 
     let pitch_position = pitch_position(Some(frequency)).unwrap_or(0.0);
     let lightness = MIN_LIGHTNESS + pitch_position * (MAX_LIGHTNESS - MIN_LIGHTNESS);
     let hue = MIN_HUE_DEGREES + pitch_position * (MAX_HUE_DEGREES - MIN_HUE_DEGREES);
     let chroma = loudness_position(rms) * MAX_CHROMA;
-    let [red, green, blue] = oklch_to_srgb(lightness, chroma, hue);
+    OklchColour {
+        lightness,
+        chroma,
+        hue_degrees: hue,
+    }
+}
 
-    [red, green, blue, 255]
+fn shortest_hue_delta(current: f32, target: f32) -> f32 {
+    (target - current + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn finite_unit(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 pub(crate) fn loudness_position(rms: f32) -> f32 {
@@ -317,21 +416,71 @@ mod tests {
 
     #[test]
     fn silence_uses_black() {
-        assert_eq!(colour_from_audio(0.0, None), QUIET_COLOUR);
+        assert_eq!(oklch_from_audio(0.0, None).to_rgba(), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn colour_smoothing_moves_toward_the_target_over_time() {
+        let features = AudioFeatures {
+            rms: 0.2,
+            dominant_hz: Some(1_000.0),
+            ..AudioFeatures::default()
+        };
+        let target = oklch_from_audio(features.rms, features.dominant_hz);
+        let mut smoother = ColourSmoother::new();
+
+        smoother.update(1.0 / 60.0, &features);
+        assert!(smoother.current.lightness > 0.0);
+        assert!(smoother.current.lightness < target.lightness);
+        assert!(smoother.current.chroma < target.chroma);
+
+        for _ in 0..300 {
+            smoother.update(1.0 / 60.0, &features);
+        }
+        assert!((smoother.current.lightness - target.lightness).abs() < 0.001);
+        assert!((smoother.current.chroma - target.chroma).abs() < 0.001);
+    }
+
+    #[test]
+    fn beats_make_colour_transitions_more_responsive() {
+        let ordinary_features = AudioFeatures {
+            rms: 0.2,
+            dominant_hz: Some(1_000.0),
+            ..AudioFeatures::default()
+        };
+        let beat_features = AudioFeatures {
+            beat_count: 1,
+            beat_strength: 1.0,
+            ..ordinary_features
+        };
+        let mut ordinary = ColourSmoother::new();
+        let mut on_beat = ColourSmoother::new();
+
+        ordinary.update(1.0 / 60.0, &ordinary_features);
+        on_beat.update(1.0 / 60.0, &beat_features);
+
+        assert!(on_beat.current.lightness > ordinary.current.lightness);
+        assert!(on_beat.current.chroma > ordinary.current.chroma);
+    }
+
+    #[test]
+    fn hue_uses_the_shortest_path_around_the_colour_wheel() {
+        assert_eq!(shortest_hue_delta(350.0, 10.0), 20.0);
+        assert_eq!(shortest_hue_delta(10.0, 350.0), -20.0);
     }
 
     #[test]
     fn low_and_high_frequencies_have_different_colours() {
-        let low = colour_from_audio(0.1, Some(80.0));
-        let high = colour_from_audio(0.1, Some(4_000.0));
+        let low = oklch_from_audio(0.1, Some(80.0)).to_rgba();
+        let high = oklch_from_audio(0.1, Some(4_000.0)).to_rgba();
 
         assert_ne!(low, high);
     }
 
     #[test]
     fn higher_pitch_produces_higher_lightness() {
-        let low = colour_from_audio(0.0, Some(80.0));
-        let high = colour_from_audio(0.0, Some(4_000.0));
+        let low = oklch_from_audio(0.0, Some(80.0)).to_rgba();
+        let high = oklch_from_audio(0.0, Some(4_000.0)).to_rgba();
         let low_brightness: u16 = low[..3].iter().map(|channel| u16::from(*channel)).sum();
         let high_brightness: u16 = high[..3].iter().map(|channel| u16::from(*channel)).sum();
 
@@ -340,8 +489,8 @@ mod tests {
 
     #[test]
     fn louder_audio_produces_more_chroma() {
-        let quiet = colour_from_audio(0.0, Some(440.0));
-        let loud = colour_from_audio(0.32, Some(440.0));
+        let quiet = oklch_from_audio(0.0, Some(440.0)).to_rgba();
+        let loud = oklch_from_audio(0.32, Some(440.0)).to_rgba();
         let channel_spread = |colour: [u8; 4]| {
             let channels = &colour[..3];
             channels.iter().max().unwrap() - channels.iter().min().unwrap()
@@ -352,9 +501,18 @@ mod tests {
 
     #[test]
     fn invalid_frequency_uses_black() {
-        assert_eq!(colour_from_audio(0.1, Some(f32::NAN)), QUIET_COLOUR);
-        assert_eq!(colour_from_audio(0.1, Some(f32::INFINITY)), QUIET_COLOUR);
-        assert_eq!(colour_from_audio(0.1, Some(-440.0)), QUIET_COLOUR);
+        assert_eq!(
+            oklch_from_audio(0.1, Some(f32::NAN)).to_rgba(),
+            [0, 0, 0, 255]
+        );
+        assert_eq!(
+            oklch_from_audio(0.1, Some(f32::INFINITY)).to_rgba(),
+            [0, 0, 0, 255]
+        );
+        assert_eq!(
+            oklch_from_audio(0.1, Some(-440.0)).to_rgba(),
+            [0, 0, 0, 255]
+        );
     }
 
     #[test]
