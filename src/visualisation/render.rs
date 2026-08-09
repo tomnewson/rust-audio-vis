@@ -327,8 +327,17 @@ fn linear_to_srgb(channel: f32) -> f32 {
 
 pub fn clear_frame(frame: &mut [u8], background: BackgroundMode, palette: &ColourPalette) {
     let colour = background.colour(palette);
-    for pixel in frame.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&colour);
+    let usable_length = frame.len() / 4 * 4;
+    if usable_length == 0 {
+        return;
+    }
+
+    frame[..4].copy_from_slice(&colour);
+    let mut filled_length = 4;
+    while filled_length < usable_length {
+        let copy_length = filled_length.min(usable_length - filled_length);
+        frame.copy_within(0..copy_length, filled_length);
+        filled_length += copy_length;
     }
 }
 
@@ -407,18 +416,29 @@ fn fill_triangle(frame: &mut [u8], vertices: [[f32; 2]; 3], colour: [u8; 4], opa
         .clamp(0.0, HEIGHT.saturating_sub(1) as f32) as u32;
 
     let alpha = opacity * (colour[3] as f32 / 255.0);
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let point = [x as f32 + 0.5, y as f32 + 0.5];
-            let edges = [
-                edge(vertices[0], vertices[1], point),
-                edge(vertices[1], vertices[2], point),
-                edge(vertices[2], vertices[0], point),
-            ];
-            let has_negative = edges.iter().any(|value| *value < 0.0);
-            let has_positive = edges.iter().any(|value| *value > 0.0);
+    let first_point = [min_x as f32 + 0.5, min_y as f32 + 0.5];
+    let mut row_edges = [
+        edge(vertices[0], vertices[1], first_point),
+        edge(vertices[1], vertices[2], first_point),
+        edge(vertices[2], vertices[0], first_point),
+    ];
+    let x_steps = [
+        vertices[1][1] - vertices[0][1],
+        vertices[2][1] - vertices[1][1],
+        vertices[0][1] - vertices[2][1],
+    ];
+    let y_steps = [
+        vertices[0][0] - vertices[1][0],
+        vertices[1][0] - vertices[2][0],
+        vertices[2][0] - vertices[0][0],
+    ];
 
-            if !(has_negative && has_positive) {
+    for y in min_y..=max_y {
+        let mut edges = row_edges;
+        for x in min_x..=max_x {
+            let all_non_negative = edges[0] >= 0.0 && edges[1] >= 0.0 && edges[2] >= 0.0;
+            let all_non_positive = edges[0] <= 0.0 && edges[1] <= 0.0 && edges[2] <= 0.0;
+            if all_non_negative || all_non_positive {
                 let start = ((y * WIDTH + x) * 4) as usize;
                 if let Some(pixel) = frame.get_mut(start..start + 4) {
                     if alpha >= 1.0 {
@@ -442,7 +462,15 @@ fn fill_triangle(frame: &mut [u8], vertices: [[f32; 2]; 3], colour: [u8; 4], opa
                     }
                 }
             }
+
+            edges[0] += x_steps[0];
+            edges[1] += x_steps[1];
+            edges[2] += x_steps[2];
         }
+
+        row_edges[0] += y_steps[0];
+        row_edges[1] += y_steps[1];
+        row_edges[2] += y_steps[2];
     }
 }
 

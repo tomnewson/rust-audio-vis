@@ -7,7 +7,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use audio::{AudioFeatures, AudioMessage, AudioWorker, BandEnergies, InputMode};
-use pixels::wgpu::{Color, CompositeAlphaMode};
+use pixels::wgpu::{Color, CompositeAlphaMode, PowerPreference, RequestAdapterOptions};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
 use visualisation::{
     BackgroundMode, BoidSimulation, ColourPalette, ColourSmoother, HEIGHT, WIDTH, clear_frame,
@@ -30,7 +30,9 @@ struct LaunchOptions {
 struct PerformanceStats {
     interval_started: Instant,
     simulation_ms: Vec<f64>,
-    rendering_ms: Vec<f64>,
+    clearing_ms: Vec<f64>,
+    drawing_ms: Vec<f64>,
+    presentation_ms: Vec<f64>,
     frame_ms: Vec<f64>,
     fixed_steps: usize,
     dropped_seconds: f32,
@@ -42,7 +44,9 @@ impl PerformanceStats {
         Self {
             interval_started: Instant::now(),
             simulation_ms: Vec::with_capacity(120),
-            rendering_ms: Vec::with_capacity(120),
+            clearing_ms: Vec::with_capacity(120),
+            drawing_ms: Vec::with_capacity(120),
+            presentation_ms: Vec::with_capacity(120),
             frame_ms: Vec::with_capacity(120),
             fixed_steps: 0,
             dropped_seconds: 0.0,
@@ -53,12 +57,16 @@ impl PerformanceStats {
     fn record(
         &mut self,
         simulation_ms: f64,
-        rendering_ms: f64,
+        clearing_ms: f64,
+        drawing_ms: f64,
+        presentation_ms: f64,
         frame_ms: f64,
         simulation: visualisation::SimulationUpdateStats,
     ) {
         self.simulation_ms.push(simulation_ms);
-        self.rendering_ms.push(rendering_ms);
+        self.clearing_ms.push(clearing_ms);
+        self.drawing_ms.push(drawing_ms);
+        self.presentation_ms.push(presentation_ms);
         self.frame_ms.push(frame_ms);
         self.fixed_steps += simulation.fixed_steps;
         self.dropped_seconds += simulation.dropped_seconds;
@@ -73,20 +81,26 @@ impl PerformanceStats {
         let fps = frame_count as f64 / interval_seconds;
         let steps_per_frame = self.fixed_steps as f64 / frame_count.max(1) as f64;
         eprintln!(
-            "perf boids={} fps={fps:.1} frame={:.2}/{:.2}ms sim={:.2}/{:.2}ms render={:.2}/{:.2}ms steps/frame={steps_per_frame:.2} dropped={:.2}ms",
+            "perf boids={} fps={fps:.1} frame={:.2}/{:.2}ms sim={:.2}/{:.2}ms clear={:.2}/{:.2}ms draw={:.2}/{:.2}ms present={:.2}/{:.2}ms steps/frame={steps_per_frame:.2} dropped={:.2}ms",
             self.boid_count,
             average(&self.frame_ms),
             percentile(&mut self.frame_ms, 0.95),
             average(&self.simulation_ms),
             percentile(&mut self.simulation_ms, 0.95),
-            average(&self.rendering_ms),
-            percentile(&mut self.rendering_ms, 0.95),
+            average(&self.clearing_ms),
+            percentile(&mut self.clearing_ms, 0.95),
+            average(&self.drawing_ms),
+            percentile(&mut self.drawing_ms, 0.95),
+            average(&self.presentation_ms),
+            percentile(&mut self.presentation_ms, 0.95),
             self.dropped_seconds as f64 * 1_000.0,
         );
 
         self.interval_started = Instant::now();
         self.simulation_ms.clear();
-        self.rendering_ms.clear();
+        self.clearing_ms.clear();
+        self.drawing_ms.clear();
+        self.presentation_ms.clear();
         self.frame_ms.clear();
         self.fixed_steps = 0;
         self.dropped_seconds = 0.0;
@@ -222,18 +236,27 @@ impl App {
         let simulation_stats = self.simulation.update(elapsed_seconds, &self.features);
         let simulation_ms = simulation_started.elapsed().as_secs_f64() * 1_000.0;
 
-        let rendering_started = Instant::now();
+        let mut clearing_ms = 0.0;
+        let mut drawing_ms = 0.0;
+        let mut presentation_ms = 0.0;
         if let Some(pixels) = self.pixels.as_mut() {
+            let clearing_started = Instant::now();
             clear_frame(pixels.frame_mut(), self.background_mode, &palette);
+            clearing_ms = clearing_started.elapsed().as_secs_f64() * 1_000.0;
+            let drawing_started = Instant::now();
             self.simulation.draw(pixels.frame_mut(), &palette);
+            drawing_ms = drawing_started.elapsed().as_secs_f64() * 1_000.0;
+            let presentation_started = Instant::now();
             pixels.render()?;
+            presentation_ms = presentation_started.elapsed().as_secs_f64() * 1_000.0;
         }
-        let rendering_ms = rendering_started.elapsed().as_secs_f64() * 1_000.0;
 
         if let Some(stats) = &mut self.performance_stats {
             stats.record(
                 simulation_ms,
-                rendering_ms,
+                clearing_ms,
+                drawing_ms,
+                presentation_ms,
                 frame_started.elapsed().as_secs_f64() * 1_000.0,
                 simulation_stats,
             );
@@ -295,6 +318,11 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
         let mut pixels = match PixelsBuilder::new(WIDTH, HEIGHT, surface)
+            .request_adapter_options(RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            })
             .alpha_mode(CompositeAlphaMode::PreMultiplied)
             .clear_color(Color::TRANSPARENT)
             .build()
@@ -308,6 +336,18 @@ impl ApplicationHandler for App {
             }
         };
         pixels.set_scaling_mode(ScalingMode::Fill);
+
+        if self.performance_stats.is_some() {
+            let adapter = pixels.adapter().get_info();
+            eprintln!(
+                "gpu name={} type={:?} backend={:?} driver={} ({})",
+                adapter.name,
+                adapter.device_type,
+                adapter.backend,
+                adapter.driver,
+                adapter.driver_info,
+            );
+        }
 
         window.request_redraw();
         self.pixels = Some(pixels);
