@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: visualiser
+            asset_name: visualiser-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: visualiser.exe
+            asset_name: visualiser-windows-x86_64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: visualiser
+            asset_name: visualiser-macos-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Linux: install ALSA dev headers required by the audio capture crate.
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tag
+        id: tag
+        run: echo "tag=main-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes \
+            "Automated release for commit ${{ github.sha }} on \`main\`." \
+            artifacts/visualiser-linux-x86_64/visualiser \
+            artifacts/visualiser-windows-x86_64/visualiser.exe \
+            artifacts/visualiser-macos-x86_64/visualiser
