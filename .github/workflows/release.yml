@@ -71,6 +71,13 @@ jobs:
         with:
           path: artifacts/
 
+      - name: Stage uniquely named release assets
+        run: |
+          mkdir release-assets
+          cp artifacts/visualiser-linux-x86_64/visualiser release-assets/visualiser-linux-x86_64
+          cp artifacts/visualiser-windows-x86_64/visualiser.exe release-assets/visualiser-windows-x86_64.exe
+          cp artifacts/visualiser-macos-arm64/visualiser release-assets/visualiser-macos-arm64
+
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,6 +87,6 @@ jobs:
             --title "Release $TAG" \
             --notes \
             "Automated release for commit ${{ github.sha }} on \`main\`." \
-            artifacts/visualiser-linux-x86_64/visualiser \
-            artifacts/visualiser-windows-x86_64/visualiser.exe \
-            artifacts/visualiser-macos-arm64/visualiser
+            release-assets/visualiser-linux-x86_64 \
+            release-assets/visualiser-windows-x86_64.exe \
+            release-assets/visualiser-macos-arm64
