@@ -9,7 +9,7 @@ use std::time::Instant;
 use audio::{AudioFeatures, AudioMessage, AudioWorker, BandEnergies, InputMode};
 use pixels::wgpu::{Color, CompositeAlphaMode};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
-use visualisation::{BoidSimulation, ColourSmoother, HEIGHT, WIDTH, clear_frame};
+use visualisation::{BoidSimulation, ColourPalette, ColourSmoother, HEIGHT, WIDTH, clear_frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -207,7 +207,7 @@ impl App {
             self.receive_audio();
         }
 
-        let colour = self.colour_smoother.update(elapsed_seconds, &self.features);
+        let palette: ColourPalette = self.colour_smoother.update(elapsed_seconds, &self.features);
         let simulation_started = Instant::now();
         let simulation_stats = self.simulation.update(elapsed_seconds, &self.features);
         let simulation_ms = simulation_started.elapsed().as_secs_f64() * 1_000.0;
@@ -215,7 +215,7 @@ impl App {
         let rendering_started = Instant::now();
         if let Some(pixels) = self.pixels.as_mut() {
             clear_frame(pixels.frame_mut());
-            self.simulation.draw(pixels.frame_mut(), colour);
+            self.simulation.draw(pixels.frame_mut(), &palette);
             pixels.render()?;
         }
         let rendering_ms = rendering_started.elapsed().as_secs_f64() * 1_000.0;

@@ -1,4 +1,3 @@
-
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -212,6 +211,7 @@ fn wrapping_keeps_positions_inside_the_canvas() {
         target_visible: true,
         wander_angle: 0.0,
         ripple_pulse: 0.0,
+        colour_index: 0,
     });
     let mut inputs = SimulationInputs::from_audio(&loud_features());
     inputs.wander_strength = 0.0;
@@ -321,7 +321,38 @@ fn identical_seeds_produce_identical_flocks() {
     for (left, right) in first.boids.iter().zip(&second.boids) {
         assert_eq!(left.position, right.position);
         assert_eq!(left.velocity, right.velocity);
+        assert_eq!(left.colour_index, right.colour_index);
     }
+}
+
+#[test]
+fn flock_uses_multiple_stable_colour_variants() {
+    let mut simulation = BoidSimulation::with_seed(6);
+    let inputs = SimulationInputs::from_audio(&loud_features());
+    simulation.reconcile_population(100, inputs.max_speed);
+
+    let original_indices: Vec<u8> = simulation
+        .boids
+        .iter()
+        .map(|boid| boid.colour_index)
+        .collect();
+    let unique_indices: HashSet<u8> = original_indices.iter().copied().collect();
+    assert!(unique_indices.len() > 1);
+    assert!(
+        original_indices
+            .iter()
+            .all(|index| usize::from(*index) < COLOUR_VARIANT_COUNT)
+    );
+
+    simulation.reconcile_population(50, inputs.max_speed);
+    simulation.reconcile_population(100, inputs.max_speed);
+
+    let reactivated_indices: Vec<u8> = simulation
+        .boids
+        .iter()
+        .map(|boid| boid.colour_index)
+        .collect();
+    assert_eq!(reactivated_indices, original_indices);
 }
 
 #[test]
@@ -334,6 +365,7 @@ fn separation_pushes_close_boids_apart() {
             target_visible: true,
             wander_angle: 0.0,
             ripple_pulse: 0.0,
+            colour_index: 0,
         },
         Boid {
             position: Vec2::new(105.0, 100.0),
@@ -342,6 +374,7 @@ fn separation_pushes_close_boids_apart() {
             target_visible: true,
             wander_angle: 0.0,
             ripple_pulse: 0.0,
+            colour_index: 1,
         },
     ];
     let inputs = SimulationInputs {

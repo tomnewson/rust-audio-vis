@@ -1,5 +1,8 @@
 use crate::audio::AudioFeatures;
-use crate::visualisation::render::{HEIGHT, WIDTH, draw_boid, loudness_position, pitch_position};
+use crate::visualisation::render::{
+    COLOUR_VARIANT_COUNT, ColourPalette, HEIGHT, WIDTH, draw_boid, loudness_position,
+    pitch_position,
+};
 
 const MAX_BOIDS: usize = 500;
 const FIXED_TIME_STEP: f32 = 1.0 / 60.0;
@@ -101,6 +104,7 @@ struct Boid {
     target_visible: bool,
     wander_angle: f32,
     ripple_pulse: f32,
+    colour_index: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,8 +345,9 @@ impl BoidSimulation {
         }
     }
 
-    pub fn draw(&self, frame: &mut [u8], colour: [u8; 4]) {
+    pub fn draw(&self, frame: &mut [u8], palette: &ColourPalette) {
         for boid in &self.boids {
+            let colour = palette.colour_for(boid.colour_index, boid.ripple_pulse);
             draw_boid(
                 frame,
                 [boid.position.x, boid.position.y],
@@ -575,6 +580,8 @@ fn toroidal_offset(from: Vec2, to: Vec2) -> Vec2 {
 fn random_boid(rng: &mut XorShift64, max_speed: f32) -> Boid {
     let angle = rng.range(0.0, std::f32::consts::TAU);
     let speed = rng.range(max_speed * 0.6, max_speed.max(1.0));
+    let colour_index = ((rng.next_f32() * COLOUR_VARIANT_COUNT as f32) as usize)
+        .min(COLOUR_VARIANT_COUNT - 1) as u8;
     Boid {
         position: Vec2::new(rng.range(0.0, WIDTH as f32), rng.range(0.0, HEIGHT as f32)),
         velocity: Vec2::new(angle.cos(), angle.sin()) * speed,
@@ -582,6 +589,7 @@ fn random_boid(rng: &mut XorShift64, max_speed: f32) -> Boid {
         target_visible: true,
         wander_angle: rng.range(0.0, std::f32::consts::TAU),
         ripple_pulse: 0.0,
+        colour_index,
     }
 }
 

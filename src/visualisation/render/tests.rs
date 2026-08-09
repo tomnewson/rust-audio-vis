@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn pixel_at(frame: &[u8], x: u32, y: u32) -> &[u8] {
@@ -64,8 +63,110 @@ fn ripple_pulse_makes_a_boid_larger() {
 }
 
 #[test]
-fn silence_uses_black() {
+fn missing_pitch_target_is_black() {
     assert_eq!(oklch_from_audio(0.0, None).to_rgba(), [0, 0, 0, 255]);
+}
+
+#[test]
+fn silence_holds_the_last_colour_while_boids_fade_out() {
+    let audible = AudioFeatures {
+        rms: 0.2,
+        dominant_hz: Some(1_000.0),
+        ..AudioFeatures::default()
+    };
+    let mut smoother = ColourSmoother::new();
+    for _ in 0..300 {
+        smoother.update(1.0 / 60.0, &audible);
+    }
+    let colour_before_silence = smoother.current;
+
+    for _ in 0..300 {
+        smoother.update(1.0 / 60.0, &AudioFeatures::default());
+    }
+
+    assert_eq!(smoother.current, colour_before_silence);
+}
+
+#[test]
+fn silence_before_any_audio_stays_black() {
+    let mut smoother = ColourSmoother::new();
+    let palette = smoother.update(1.0, &AudioFeatures::default());
+
+    assert_eq!(smoother.current, OklchColour::BLACK);
+    assert_eq!(
+        palette.colour_for((COLOUR_VARIANT_COUNT / 2) as u8, 0.0),
+        [0, 0, 0, 255]
+    );
+}
+
+#[test]
+fn palette_centre_preserves_the_smoothed_audio_colour() {
+    let base = OklchColour {
+        lightness: 0.6,
+        chroma: 0.15,
+        hue_degrees: 200.0,
+    };
+    let palette = ColourPalette::from_base(base);
+
+    assert_eq!(palette.normal[COLOUR_VARIANT_COUNT / 2], base.to_rgba());
+}
+
+#[test]
+fn palette_spreads_boids_across_a_cohesive_hue_range() {
+    let base = OklchColour {
+        lightness: 0.6,
+        chroma: 0.15,
+        hue_degrees: 200.0,
+    };
+    let low = palette_variant(base, -1.0, false);
+    let high = palette_variant(base, 1.0, false);
+    let palette = ColourPalette::from_base(base);
+
+    assert_eq!(low.hue_degrees, 155.0);
+    assert_eq!(high.hue_degrees, 245.0);
+    assert_ne!(palette.normal[0], palette.normal[COLOUR_VARIANT_COUNT - 1]);
+}
+
+#[test]
+fn palette_hue_variation_wraps_around_the_colour_wheel() {
+    let base = OklchColour {
+        lightness: 0.6,
+        chroma: 0.15,
+        hue_degrees: 350.0,
+    };
+
+    let wrapped = palette_variant(base, 1.0, false);
+    assert!((wrapped.hue_degrees - 35.0).abs() < f32::EPSILON);
+    assert_eq!(wrapped.to_rgba()[3], 255);
+}
+
+#[test]
+fn ripple_pulse_brightens_and_saturates_a_palette_variant() {
+    let base = OklchColour {
+        lightness: 0.55,
+        chroma: 0.12,
+        hue_degrees: 120.0,
+    };
+    let normal = palette_variant(base, 0.0, false);
+    let pulsing = palette_variant(base, 0.0, true);
+    let palette = ColourPalette::from_base(base);
+    let index = (COLOUR_VARIANT_COUNT / 2) as u8;
+
+    assert!(pulsing.lightness > normal.lightness);
+    assert!(pulsing.chroma > normal.chroma);
+    assert_eq!(palette.colour_for(index, 0.0), normal.to_rgba());
+    assert_eq!(palette.colour_for(index, 1.0), pulsing.to_rgba());
+}
+
+#[test]
+fn black_palette_remains_black_even_during_a_ripple() {
+    let palette = ColourPalette::from_base(OklchColour::BLACK);
+
+    for index in 0..COLOUR_VARIANT_COUNT {
+        assert_eq!(palette.normal[index], [0, 0, 0, 255]);
+        assert_eq!(palette.pulsing[index], [0, 0, 0, 255]);
+        assert_eq!(palette.colour_for(index as u8, 1.0), [0, 0, 0, 255]);
+    }
 }
 
 #[test]

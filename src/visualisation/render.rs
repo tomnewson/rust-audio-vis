@@ -16,6 +16,13 @@ const MAX_HUE_DEGREES: f32 = 320.0;
 const SLOW_COLOUR_TAU_SECONDS: f32 = 0.32;
 const FAST_COLOUR_TAU_SECONDS: f32 = 0.055;
 const BEAT_RESPONSE_SECONDS: f32 = 0.22;
+pub(super) const COLOUR_VARIANT_COUNT: usize = 33;
+const HUE_VARIATION_DEGREES: f32 = 45.0;
+const LIGHTNESS_VARIATION: f32 = 0.035;
+const PULSE_LIGHTNESS_BOOST: f32 = 0.12;
+const PULSE_CHROMA_BOOST: f32 = 0.04;
+const MAX_PALETTE_LIGHTNESS: f32 = 0.95;
+const MAX_PALETTE_CHROMA: f32 = 0.30;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OklchColour {
@@ -37,6 +44,59 @@ impl OklchColour {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ColourPalette {
+    normal: [[u8; 4]; COLOUR_VARIANT_COUNT],
+    pulsing: [[u8; 4]; COLOUR_VARIANT_COUNT],
+}
+
+impl ColourPalette {
+    fn from_base(base: OklchColour) -> Self {
+        let normal = std::array::from_fn(|index| {
+            palette_variant(base, palette_phase(index), false).to_rgba()
+        });
+        let pulsing = std::array::from_fn(|index| {
+            palette_variant(base, palette_phase(index), true).to_rgba()
+        });
+        Self { normal, pulsing }
+    }
+
+    pub fn colour_for(&self, index: u8, ripple_pulse: f32) -> [u8; 4] {
+        let index = usize::from(index).min(COLOUR_VARIANT_COUNT - 1);
+        let normal = self.normal[index];
+        let pulsing = self.pulsing[index];
+        let amount = finite_unit(ripple_pulse);
+        let mut colour = [0; 4];
+        for channel in 0..3 {
+            colour[channel] = (normal[channel] as f32
+                + (pulsing[channel] as f32 - normal[channel] as f32) * amount)
+                .round() as u8;
+        }
+        colour[3] = 255;
+        colour
+    }
+}
+
+fn palette_phase(index: usize) -> f32 {
+    index as f32 / (COLOUR_VARIANT_COUNT - 1) as f32 * 2.0 - 1.0
+}
+
+fn palette_variant(base: OklchColour, phase: f32, pulsing: bool) -> OklchColour {
+    if base.lightness <= 0.000_1 {
+        return OklchColour::BLACK;
+    }
+
+    OklchColour {
+        lightness: (base.lightness
+            + phase * LIGHTNESS_VARIATION
+            + if pulsing { PULSE_LIGHTNESS_BOOST } else { 0.0 })
+        .clamp(0.0, MAX_PALETTE_LIGHTNESS),
+        chroma: (base.chroma + if pulsing { PULSE_CHROMA_BOOST } else { 0.0 })
+            .clamp(0.0, MAX_PALETTE_CHROMA),
+        hue_degrees: (base.hue_degrees + phase * HUE_VARIATION_DEGREES).rem_euclid(360.0),
+    }
+}
+
 pub struct ColourSmoother {
     current: OklchColour,
     last_beat_count: u64,
@@ -52,7 +112,7 @@ impl ColourSmoother {
         }
     }
 
-    pub fn update(&mut self, elapsed_seconds: f32, features: &AudioFeatures) -> [u8; 4] {
+    pub fn update(&mut self, elapsed_seconds: f32, features: &AudioFeatures) -> ColourPalette {
         let elapsed_seconds = if elapsed_seconds.is_finite() {
             elapsed_seconds.clamp(0.0, 0.1)
         } else {
@@ -76,22 +136,25 @@ impl ColourSmoother {
         };
         let target = oklch_from_audio(features.rms, features.dominant_hz);
 
-        if target.chroma > 0.000_1
-            && (self.current.chroma <= 0.000_1 || self.current.lightness <= 0.000_1)
-        {
-            self.current.hue_degrees = target.hue_degrees;
-        } else if target.chroma > 0.000_1 {
-            self.current.hue_degrees = (self.current.hue_degrees
-                + shortest_hue_delta(self.current.hue_degrees, target.hue_degrees) * interpolation)
-                .rem_euclid(360.0);
-        }
+        if target.lightness > 0.000_1 {
+            if target.chroma > 0.000_1
+                && (self.current.chroma <= 0.000_1 || self.current.lightness <= 0.000_1)
+            {
+                self.current.hue_degrees = target.hue_degrees;
+            } else if target.chroma > 0.000_1 {
+                self.current.hue_degrees = (self.current.hue_degrees
+                    + shortest_hue_delta(self.current.hue_degrees, target.hue_degrees)
+                        * interpolation)
+                    .rem_euclid(360.0);
+            }
 
-        self.current.lightness += (target.lightness - self.current.lightness) * interpolation;
-        self.current.chroma += (target.chroma - self.current.chroma) * interpolation;
+            self.current.lightness += (target.lightness - self.current.lightness) * interpolation;
+            self.current.chroma += (target.chroma - self.current.chroma) * interpolation;
+        }
         self.beat_response =
             (self.beat_response - elapsed_seconds / BEAT_RESPONSE_SECONDS).max(0.0);
 
-        self.current.to_rgba()
+        ColourPalette::from_base(self.current)
     }
 }
 
