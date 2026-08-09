@@ -1,14 +1,3 @@
-# Release workflow
-#
-# Triggered on every push to `main`. Each push produces a GitHub Release tagged
-# `main-<short-sha>` (e.g. `main-a1b2c3d`), so repeated pushes never collide.
-# Release binaries are built in parallel for Windows, Linux, and macOS and then
-# attached to the release as named artifacts.
-#
-# Permissions:
-#   contents: write   – required to create tags, releases, and upload assets
-#   All other permissions default to `none` (least-privilege).
-
 name: Release
 
 on:
