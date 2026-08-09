@@ -327,6 +327,8 @@ impl App {
         if let Err(error) = window.set_cursor_hittest(hittest) {
             eprintln!("Could not update window click-through mode: {error}");
         }
+
+        window.set_cursor_visible(!hittest);
     }
 }
 
