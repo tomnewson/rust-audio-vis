@@ -38,10 +38,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Linux: install ALSA dev headers required by the audio capture crate.
+      # Linux: install ALSA and PipeWire headers required by the audio capture crate.
       - name: Install Linux audio dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
