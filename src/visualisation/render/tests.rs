@@ -6,16 +6,41 @@ fn pixel_at(frame: &[u8], x: u32, y: u32) -> &[u8] {
 }
 
 #[test]
-fn clear_frame_is_fully_transparent() {
+fn clear_frame_uses_the_selected_background() {
     let mut frame = vec![255; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(&mut frame);
-    assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), BACKGROUND);
+    let base = OklchColour {
+        lightness: 0.6,
+        chroma: 0.15,
+        hue_degrees: 200.0,
+    };
+    let palette = ColourPalette::from_base(base);
+    for (mode, expected) in [
+        (BackgroundMode::Black, BLACK_BACKGROUND),
+        (BackgroundMode::White, WHITE_BACKGROUND),
+        (BackgroundMode::Transparent, TRANSPARENT_BACKGROUND),
+        (BackgroundMode::Boid, base.to_rgba()),
+    ] {
+        clear_frame(&mut frame, mode, &palette);
+        assert_eq!(pixel_at(&frame, WIDTH / 2, HEIGHT / 2), expected);
+    }
+}
+
+#[test]
+fn background_modes_cycle_in_display_order() {
+    assert_eq!(BackgroundMode::Black.next(), BackgroundMode::White);
+    assert_eq!(BackgroundMode::White.next(), BackgroundMode::Transparent);
+    assert_eq!(BackgroundMode::Transparent.next(), BackgroundMode::Boid);
+    assert_eq!(BackgroundMode::Boid.next(), BackgroundMode::Black);
 }
 
 #[test]
 fn boid_draws_in_its_colour() {
     let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(&mut frame);
+    clear_frame(
+        &mut frame,
+        BackgroundMode::Transparent,
+        &ColourPalette::from_base(OklchColour::BLACK),
+    );
     draw_boid(
         &mut frame,
         [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0],
@@ -30,7 +55,11 @@ fn boid_draws_in_its_colour() {
 #[test]
 fn fading_boid_remains_transparent() {
     let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(&mut frame);
+    clear_frame(
+        &mut frame,
+        BackgroundMode::Transparent,
+        &ColourPalette::from_base(OklchColour::BLACK),
+    );
     fill_triangle(
         &mut frame,
         [[10.0, 10.0], [20.0, 10.0], [10.0, 20.0]],
@@ -44,10 +73,14 @@ fn fading_boid_remains_transparent() {
 #[test]
 fn invisible_and_offscreen_boids_are_safe() {
     let mut frame = vec![0; (WIDTH * HEIGHT * 4) as usize];
-    clear_frame(&mut frame);
+    clear_frame(
+        &mut frame,
+        BackgroundMode::Transparent,
+        &ColourPalette::from_base(OklchColour::BLACK),
+    );
     draw_boid(&mut frame, [20.0, 20.0], [1.0, 0.0], 0.0, 0.0, [255; 4]);
     draw_boid(&mut frame, [-100.0, -100.0], [1.0, 0.0], 1.0, 0.0, [255; 4]);
-    assert_eq!(pixel_at(&frame, 20, 20), BACKGROUND);
+    assert_eq!(pixel_at(&frame, 20, 20), TRANSPARENT_BACKGROUND);
 }
 
 #[test]

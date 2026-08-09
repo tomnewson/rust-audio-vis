@@ -9,7 +9,9 @@ use std::time::Instant;
 use audio::{AudioFeatures, AudioMessage, AudioWorker, BandEnergies, InputMode};
 use pixels::wgpu::{Color, CompositeAlphaMode};
 use pixels::{Pixels, PixelsBuilder, ScalingMode, SurfaceTexture};
-use visualisation::{BoidSimulation, ColourPalette, ColourSmoother, HEIGHT, WIDTH, clear_frame};
+use visualisation::{
+    BackgroundMode, BoidSimulation, ColourPalette, ColourSmoother, HEIGHT, WIDTH, clear_frame,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -21,6 +23,7 @@ use winit::window::{Window, WindowId};
 struct LaunchOptions {
     demo_mode: bool,
     input_mode: InputMode,
+    background_mode: BackgroundMode,
     show_stats: bool,
 }
 
@@ -100,13 +103,19 @@ struct App {
     audio_receiver: Option<Receiver<AudioMessage>>,
     audio_error: Option<String>,
     demo_mode: bool,
+    background_mode: BackgroundMode,
     performance_stats: Option<PerformanceStats>,
     started_at: Instant,
     last_frame_at: Instant,
 }
 
 impl App {
-    fn new(demo_mode: bool, input_mode: InputMode, show_stats: bool) -> Self {
+    fn new(
+        demo_mode: bool,
+        input_mode: InputMode,
+        background_mode: BackgroundMode,
+        show_stats: bool,
+    ) -> Self {
         let (audio_worker, audio_receiver) = if demo_mode {
             (None, None)
         } else {
@@ -124,6 +133,7 @@ impl App {
             audio_receiver,
             audio_error: None,
             demo_mode,
+            background_mode,
             performance_stats: show_stats.then(PerformanceStats::new),
             started_at: Instant::now(),
             last_frame_at: Instant::now(),
@@ -214,7 +224,7 @@ impl App {
 
         let rendering_started = Instant::now();
         if let Some(pixels) = self.pixels.as_mut() {
-            clear_frame(pixels.frame_mut());
+            clear_frame(pixels.frame_mut(), self.background_mode, &palette);
             self.simulation.draw(pixels.frame_mut(), &palette);
             pixels.render()?;
         }
@@ -244,6 +254,10 @@ impl App {
         {
             eprintln!("Could not switch audio input: {error}");
         }
+    }
+
+    fn toggle_background(&mut self) {
+        self.background_mode = self.background_mode.next();
     }
 }
 
@@ -335,6 +349,13 @@ impl ApplicationHandler for App {
             {
                 self.toggle_audio_input();
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyB) =>
+            {
+                self.toggle_background();
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     eprintln!("Could not draw the next frame: {error}");
@@ -358,6 +379,7 @@ fn parse_launch_options(
     let mut options = LaunchOptions {
         demo_mode: false,
         input_mode: InputMode::Loopback,
+        background_mode: BackgroundMode::Transparent,
         show_stats: false,
     };
     let mut arguments = arguments.into_iter();
@@ -372,12 +394,20 @@ fn parse_launch_options(
                     .ok_or_else(|| "--input requires either 'loopback' or 'mic'".to_owned())?;
                 options.input_mode = parse_input_mode(&value)?;
             }
+            "--background" => {
+                let value = arguments.next().ok_or_else(|| {
+                    "--background requires 'black', 'white', 'transparent', or 'boid'".to_owned()
+                })?;
+                options.background_mode = parse_background_mode(&value)?;
+            }
             _ => {
                 if let Some(value) = argument.strip_prefix("--input=") {
                     options.input_mode = parse_input_mode(value)?;
+                } else if let Some(value) = argument.strip_prefix("--background=") {
+                    options.background_mode = parse_background_mode(value)?;
                 } else {
                     return Err(format!(
-                        "unknown argument '{argument}'; use --input loopback, --input mic, --demo, or --stats"
+                        "unknown argument '{argument}'; use --input loopback|mic, --background black|white|transparent|boid, --demo, or --stats"
                     ));
                 }
             }
@@ -385,6 +415,18 @@ fn parse_launch_options(
     }
 
     Ok(options)
+}
+
+fn parse_background_mode(value: &str) -> Result<BackgroundMode, String> {
+    match value {
+        "black" => Ok(BackgroundMode::Black),
+        "white" => Ok(BackgroundMode::White),
+        "transparent" => Ok(BackgroundMode::Transparent),
+        "boid" => Ok(BackgroundMode::Boid),
+        _ => Err(format!(
+            "unknown background '{value}'; expected 'black', 'white', 'transparent', or 'boid'"
+        )),
+    }
 }
 
 fn parse_input_mode(value: &str) -> Result<InputMode, String> {
@@ -413,7 +455,12 @@ fn percentile(samples: &mut [f64], percentile: f64) -> f64 {
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_launch_options(std::env::args().skip(1))?;
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(options.demo_mode, options.input_mode, options.show_stats);
+    let mut app = App::new(
+        options.demo_mode,
+        options.input_mode,
+        options.background_mode,
+        options.show_stats,
+    );
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -433,6 +480,7 @@ mod tests {
             LaunchOptions {
                 demo_mode: false,
                 input_mode: InputMode::Loopback,
+                background_mode: BackgroundMode::Transparent,
                 show_stats: false,
             }
         );
@@ -458,6 +506,40 @@ mod tests {
     fn invalid_input_is_rejected() {
         assert!(parse_launch_options(arguments(&["--input", "file"])).is_err());
         assert!(parse_launch_options(arguments(&["--input"])).is_err());
+    }
+
+    #[test]
+    fn background_can_be_selected_at_launch() {
+        assert_eq!(
+            parse_launch_options(arguments(&["--background", "black"]))
+                .unwrap()
+                .background_mode,
+            BackgroundMode::Black
+        );
+        assert_eq!(
+            parse_launch_options(arguments(&["--background=white"]))
+                .unwrap()
+                .background_mode,
+            BackgroundMode::White
+        );
+        assert_eq!(
+            parse_launch_options(arguments(&["--background", "transparent"]))
+                .unwrap()
+                .background_mode,
+            BackgroundMode::Transparent
+        );
+        assert_eq!(
+            parse_launch_options(arguments(&["--background=boid"]))
+                .unwrap()
+                .background_mode,
+            BackgroundMode::Boid
+        );
+    }
+
+    #[test]
+    fn invalid_background_is_rejected() {
+        assert!(parse_launch_options(arguments(&["--background", "blue"])).is_err());
+        assert!(parse_launch_options(arguments(&["--background"])).is_err());
     }
 
     #[test]

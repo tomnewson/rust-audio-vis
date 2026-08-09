@@ -6,8 +6,8 @@ This document describes the mappings currently implemented by the visualiser. Bo
 
 | Audio feature | Main visual result |
 | --- | --- |
-| RMS loudness | Number of boids and colour chroma |
-| Dominant frequency (pitch) | Colour hue, colour lightness, and boid speed |
+| RMS loudness | Number of boids and colour chroma, including the optional boid-colour background |
+| Dominant frequency (pitch) | Colour hue, colour lightness, boid speed, and the optional boid-colour background |
 | Spectral flux | More wandering and faster colour transitions |
 | Spectral flatness | Slightly less alignment, more wandering, and greater calculated chaos |
 | Low-frequency energy | Stronger cohesion |
@@ -284,6 +284,12 @@ The base OKLCH colour is converted into a palette of `33` variants. Each boid re
 - Dominant pitch is disabled below `-50 dBFS`.
 - Spectral flatness, band energies, onset rate, rhythmic irregularity, chaos, BPM, and tempo confidence are smoothed before reaching the visualisation.
 - General analysis smoothing responds faster when a feature rises (`0.35` per update) than when it falls (`0.08` per update).
+
+## Background
+
+The background mode is user-controlled. Press `B` to cycle through black, white, transparent, and boid colour, or select the initial mode with `--background black`, `--background white`, `--background transparent`, or `--background boid`.
+
+The black, white, and transparent modes are not audio-reactive. Boid-colour mode uses the exact smoothed base OKLCH colour for the current frame before the `±45°` per-boid hue variation is applied. It does not receive a ripple colour boost. Like the boid palette, it holds the last valid colour while the boids fade out during silence.
 
 ## Source files
 

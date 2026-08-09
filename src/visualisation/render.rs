@@ -3,7 +3,9 @@ use crate::audio::AudioFeatures;
 pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 480;
 
-const BACKGROUND: [u8; 4] = [0, 0, 0, 0];
+const BLACK_BACKGROUND: [u8; 4] = [0, 0, 0, 255];
+const WHITE_BACKGROUND: [u8; 4] = [255, 255, 255, 255];
+const TRANSPARENT_BACKGROUND: [u8; 4] = [0, 0, 0, 0];
 const MIN_DBFS: f32 = -50.0;
 const MAX_DBFS: f32 = -10.0;
 const MIN_FREQUENCY_HZ: f32 = 80.0;
@@ -23,6 +25,35 @@ const PULSE_LIGHTNESS_BOOST: f32 = 0.12;
 const PULSE_CHROMA_BOOST: f32 = 0.04;
 const MAX_PALETTE_LIGHTNESS: f32 = 0.95;
 const MAX_PALETTE_CHROMA: f32 = 0.30;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackgroundMode {
+    Black,
+    White,
+    #[default]
+    Transparent,
+    Boid,
+}
+
+impl BackgroundMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Black => Self::White,
+            Self::White => Self::Transparent,
+            Self::Transparent => Self::Boid,
+            Self::Boid => Self::Black,
+        }
+    }
+
+    fn colour(self, palette: &ColourPalette) -> [u8; 4] {
+        match self {
+            Self::Black => BLACK_BACKGROUND,
+            Self::White => WHITE_BACKGROUND,
+            Self::Transparent => TRANSPARENT_BACKGROUND,
+            Self::Boid => palette.base_colour(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OklchColour {
@@ -74,6 +105,10 @@ impl ColourPalette {
         }
         colour[3] = 255;
         colour
+    }
+
+    fn base_colour(&self) -> [u8; 4] {
+        self.normal[COLOUR_VARIANT_COUNT / 2]
     }
 }
 
@@ -290,9 +325,10 @@ fn linear_to_srgb(channel: f32) -> f32 {
     }
 }
 
-pub fn clear_frame(frame: &mut [u8]) {
+pub fn clear_frame(frame: &mut [u8], background: BackgroundMode, palette: &ColourPalette) {
+    let colour = background.colour(palette);
     for pixel in frame.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&BACKGROUND);
+        pixel.copy_from_slice(&colour);
     }
 }
 
