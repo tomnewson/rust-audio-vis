@@ -12,3 +12,6 @@ winit = "0.30.13"
 
 [dev-dependencies]
 pollster = "0.4.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

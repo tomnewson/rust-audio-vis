@@ -16,18 +16,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Build the AppImage against an older glibc baseline for broad Linux compatibility.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: visualiser
-            asset_name: visualiser-linux-x86_64
+            asset_name: raesboida-linux-x86_64
+            artifact_path: release-output/raesboida-linux-x86_64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: visualiser.exe
             asset_name: visualiser-windows-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: visualiser
-            asset_name: visualiser-macos-arm64
+            artifact_path: target/x86_64-pc-windows-msvc/release/visualiser.exe
 
     steps:
       - name: Checkout
@@ -43,14 +42,52 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev
 
+      - name: Test
+        run: cargo test --locked
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        env:
+          LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+        run: |
+          mkdir -p release-output appimage-tools
+          curl --fail --location --retry 3 \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage \
+            --output appimage-tools/linuxdeploy-x86_64.AppImage
+          echo "$LINUXDEPLOY_SHA256  appimage-tools/linuxdeploy-x86_64.AppImage" | sha256sum --check --status
+          chmod +x appimage-tools/linuxdeploy-x86_64.AppImage
+          (
+            cd release-output
+            ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ../appimage-tools/linuxdeploy-x86_64.AppImage \
+              --appdir AppDir \
+              --executable ../target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
+              --desktop-file ../packaging/linux/raesboida.desktop \
+              --icon-file ../assets/icons/icon.svg \
+              --output appimage
+          )
+          test -f release-output/raesboida-x86_64.AppImage
+          tar -czf release-output/raesboida-linux-x86_64.tar.gz -C release-output raesboida-x86_64.AppImage
+
+      - name: Verify Linux package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir package-check
+          tar -xzf release-output/raesboida-linux-x86_64.tar.gz -C package-check
+          test -x package-check/raesboida-x86_64.AppImage
+          (
+            cd package-check
+            ./raesboida-x86_64.AppImage --appimage-extract
+            test -x squashfs-root/AppRun
+          )
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
 
   release:
@@ -74,9 +111,9 @@ jobs:
       - name: Stage uniquely named release assets
         run: |
           mkdir release-assets
-          cp artifacts/visualiser-linux-x86_64/visualiser release-assets/visualiser-linux-x86_64
+          cp artifacts/raesboida-linux-x86_64/raesboida-linux-x86_64.tar.gz release-assets/raesboida-linux-x86_64.tar.gz
           cp artifacts/visualiser-windows-x86_64/visualiser.exe release-assets/visualiser-windows-x86_64.exe
-          cp artifacts/visualiser-macos-arm64/visualiser release-assets/visualiser-macos-arm64
+          sha256sum release-assets/* > release-assets/SHA256SUMS
 
       - name: Create release and upload assets
         env:
@@ -86,7 +123,9 @@ jobs:
           gh release create "$TAG" \
             --title "Release $TAG" \
             --notes \
-            "Automated release for commit ${{ github.sha }} on \`main\`." \
-            release-assets/visualiser-linux-x86_64 \
+            "Automated release for commit ${{ github.sha }} on \`main\`.
+
+            Linux: download and extract \`raesboida-linux-x86_64.tar.gz\`, then launch \`raesboida-x86_64.AppImage\`. macOS builds are unavailable until the app can be signed and notarized." \
+            release-assets/raesboida-linux-x86_64.tar.gz \
             release-assets/visualiser-windows-x86_64.exe \
-            release-assets/visualiser-macos-arm64
+            release-assets/SHA256SUMS

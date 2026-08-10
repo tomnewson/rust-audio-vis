@@ -21,10 +21,10 @@ fn background_modes_resolve_to_the_expected_clear_colour() {
 
 #[test]
 fn background_modes_cycle_in_display_order() {
-    assert_eq!(BackgroundMode::Black.next(), BackgroundMode::White);
-    assert_eq!(BackgroundMode::White.next(), BackgroundMode::Transparent);
-    assert_eq!(BackgroundMode::Transparent.next(), BackgroundMode::Boid);
-    assert_eq!(BackgroundMode::Boid.next(), BackgroundMode::Black);
+    assert_eq!(BackgroundMode::Boid.next(), BackgroundMode::Transparent);
+    assert_eq!(BackgroundMode::Transparent.next(), BackgroundMode::White);
+    assert_eq!(BackgroundMode::White.next(), BackgroundMode::Black);
+    assert_eq!(BackgroundMode::Black.next(), BackgroundMode::Boid);
 }
 
 #[test]
