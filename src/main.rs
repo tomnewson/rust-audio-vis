@@ -14,22 +14,11 @@ use visualisation::{
     INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH, MAX_BOIDS,
 };
 use winit::application::ApplicationHandler;
-#[cfg(any(target_os = "windows", test))]
-use winit::dpi::PhysicalPosition;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
-
-#[cfg(target_os = "windows")]
-use pixels::wgpu::Backends;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::POINT;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-#[cfg(target_os = "windows")]
-use winit::platform::windows::{BackdropType, Color, CornerPreference, WindowExtWindows};
 
 #[derive(Debug, PartialEq, Eq)]
 struct LaunchOptions {
@@ -316,7 +305,6 @@ impl App {
 
     fn toggle_background(&mut self) {
         self.background_mode = self.background_mode.next();
-        self.update_window_chrome();
         self.update_cursor_hittest();
     }
 
@@ -328,7 +316,6 @@ impl App {
         self.fullscreen = !self.fullscreen;
         let fullscreen = self.fullscreen.then(|| Fullscreen::Borderless(None));
         window.set_fullscreen(fullscreen);
-        self.update_cursor_hittest();
     }
 
     fn update_cursor_hittest(&self) {
@@ -336,95 +323,13 @@ impl App {
             return;
         };
 
-        let hittest = self.background_mode != BackgroundMode::Transparent
-            || self.cursor_is_over_window_chrome();
+        let hittest = self.background_mode != BackgroundMode::Transparent;
         if let Err(error) = window.set_cursor_hittest(hittest) {
             eprintln!("Could not update window click-through mode: {error}");
         }
 
-        window.set_cursor_visible(self.background_mode == BackgroundMode::Transparent);
+        window.set_cursor_visible(!hittest);
     }
-
-    fn update_window_chrome(&self) {
-        #[cfg(target_os = "windows")]
-        {
-            let Some(window) = &self.window else {
-                return;
-            };
-
-            if self.background_mode == BackgroundMode::Transparent {
-                window.set_system_backdrop(BackdropType::None);
-                window.set_border_color(None);
-                window.set_corner_preference(CornerPreference::DoNotRound);
-            } else {
-                window.set_system_backdrop(BackdropType::Auto);
-                window.set_border_color(Some(Color::SYSTEM_DEFAULT));
-                window.set_corner_preference(CornerPreference::Default);
-            }
-        }
-    }
-
-    fn cursor_is_over_window_chrome(&self) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            if self.fullscreen {
-                return false;
-            }
-
-            let Some(window) = &self.window else {
-                return false;
-            };
-            let (Ok(outer_position), Ok(inner_position)) =
-                (window.outer_position(), window.inner_position())
-            else {
-                return false;
-            };
-
-            let mut cursor = POINT { x: 0, y: 0 };
-            if unsafe { GetCursorPos(&mut cursor) } == 0 {
-                return false;
-            }
-
-            return is_cursor_over_window_chrome(
-                outer_position,
-                window.outer_size(),
-                inner_position,
-                window.inner_size(),
-                PhysicalPosition::new(cursor.x, cursor.y),
-            );
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        false
-    }
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn is_cursor_over_window_chrome(
-    outer_position: PhysicalPosition<i32>,
-    outer_size: PhysicalSize<u32>,
-    inner_position: PhysicalPosition<i32>,
-    inner_size: PhysicalSize<u32>,
-    cursor_position: PhysicalPosition<i32>,
-) -> bool {
-    point_is_inside_rect(cursor_position, outer_position, outer_size)
-        && !point_is_inside_rect(cursor_position, inner_position, inner_size)
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn point_is_inside_rect(
-    point: PhysicalPosition<i32>,
-    position: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
-) -> bool {
-    let point_x = i64::from(point.x);
-    let point_y = i64::from(point.y);
-    let left = i64::from(position.x);
-    let top = i64::from(position.y);
-    let right = left + i64::from(size.width);
-    let bottom = top + i64::from(size.height);
-
-    point_x >= left && point_x < right && point_y >= top && point_y < bottom
 }
 
 impl ApplicationHandler for App {
@@ -464,7 +369,16 @@ impl ApplicationHandler for App {
 
         let size = window.inner_size();
         self.simulation.resize_surface(size.width, size.height);
-        let pixels = match build_pixels(Arc::clone(&window), size) {
+        let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
+        let pixels = match PixelsBuilder::new(1, 1, surface)
+            .request_adapter_options(RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            })
+            .alpha_mode(CompositeAlphaMode::PreMultiplied)
+            .build()
+        {
             Ok(pixels) => pixels,
             Err(error) => {
                 eprintln!("Could not create the pixel surface: {error}");
@@ -494,7 +408,6 @@ impl ApplicationHandler for App {
         self.pixels = Some(pixels);
         self.renderer = Some(renderer);
         self.window = Some(window);
-        self.update_window_chrome();
         self.update_cursor_hittest();
     }
 
@@ -533,10 +446,6 @@ impl ApplicationHandler for App {
                     self.shutdown_audio();
                     event_loop.exit();
                 }
-                self.update_cursor_hittest();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
@@ -559,9 +468,6 @@ impl ApplicationHandler for App {
             {
                 self.toggle_fullscreen();
             }
-            WindowEvent::CursorMoved { .. } | WindowEvent::Moved(_) | WindowEvent::Focused(_) => {
-                self.update_cursor_hittest();
-            }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     eprintln!("Could not draw the next frame: {error}");
@@ -571,42 +477,12 @@ impl ApplicationHandler for App {
                 }
 
                 if let Some(window) = &self.window {
-                    self.update_cursor_hittest();
                     window.request_redraw();
                 }
             }
             _ => {}
         }
     }
-}
-
-fn build_pixels(
-    window: Arc<Window>,
-    size: PhysicalSize<u32>,
-) -> Result<Pixels<'static>, pixels::Error> {
-    let build_for_backend = |backend| {
-        let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
-        PixelsBuilder::new(1, 1, surface)
-            .request_adapter_options(RequestAdapterOptions {
-                power_preference: PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            })
-            .alpha_mode(CompositeAlphaMode::PreMultiplied)
-            .wgpu_backend(backend)
-            .build()
-    };
-
-    #[cfg(target_os = "windows")]
-    {
-        build_for_backend(Backends::GL).or_else(|gl_error| {
-            eprintln!("OpenGL backend unavailable on Windows; falling back to DX12: {gl_error}");
-            build_for_backend(Backends::DX12)
-        })
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    build_for_backend(pixels::wgpu::Backends::all())
 }
 
 fn parse_launch_options(
@@ -798,35 +674,5 @@ mod tests {
                 .unwrap()
                 .fullscreen
         );
-    }
-
-    #[test]
-    fn cursor_over_native_chrome_is_interactive() {
-        let outer_position = PhysicalPosition::new(-20, 40);
-        let outer_size = PhysicalSize::new(1_000, 800);
-        let inner_position = PhysicalPosition::new(-12, 72);
-        let inner_size = PhysicalSize::new(984, 728);
-
-        assert!(is_cursor_over_window_chrome(
-            outer_position,
-            outer_size,
-            inner_position,
-            inner_size,
-            PhysicalPosition::new(100, 50),
-        ));
-        assert!(!is_cursor_over_window_chrome(
-            outer_position,
-            outer_size,
-            inner_position,
-            inner_size,
-            PhysicalPosition::new(100, 100),
-        ));
-        assert!(!is_cursor_over_window_chrome(
-            outer_position,
-            outer_size,
-            inner_position,
-            inner_size,
-            PhysicalPosition::new(2_000, 2_000),
-        ));
     }
 }

@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=raesboida
-Comment=Audio-reactive boid visualiser
-Exec=visualiser
-Icon=icon
-Categories=AudioVideo;
-Terminal=false
