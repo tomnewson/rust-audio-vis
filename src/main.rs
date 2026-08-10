@@ -1,4 +1,7 @@
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 mod audio;
 mod visualisation;
@@ -20,7 +23,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
 #[derive(Debug, PartialEq, Eq)]
 struct LaunchOptions {
@@ -352,6 +355,7 @@ impl ApplicationHandler for App {
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_transparent(true)
+            .with_window_level(WindowLevel::AlwaysOnTop)
             .with_fullscreen(self.fullscreen.then(|| Fullscreen::Borderless(None)))
             .with_inner_size(LogicalSize::new(
                 INITIAL_WINDOW_WIDTH as f64,
