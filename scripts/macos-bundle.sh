@@ -37,7 +37,14 @@ else
 fi
 
 APP="target/macos-bundle/$NAME.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+ICONSET="assets/icons/AppIcon.iconset"
+ICNS="target/macos-bundle/AppIcon.icns"
+if [[ -d "$ICONSET" ]] && { [[ ! -f "$ICNS" ]] || [[ "$ICONSET" -nt "$ICNS" ]]; }; then
+  iconutil -c icns "$ICONSET" -o "$ICNS"
+fi
+[[ -f "$ICNS" ]] && cp -f "$ICNS" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,6 +53,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleExecutable</key>
     <string>$NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.local.rust-audio-vis</string>
     <key>CFBundleName</key>
@@ -70,7 +79,6 @@ codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 
 LOG="$(mktemp -t "${NAME}-bundle").log"
 echo "Bundled: $APP" >&2
-echo "Launching via 'open' so TCC attributes this to the bundle, not the terminal..." >&2
 echo "Output: $LOG" >&2
 open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args "$@"
 cat "$LOG"
