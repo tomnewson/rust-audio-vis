@@ -382,7 +382,7 @@ impl ApplicationHandler for App {
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
-            .alpha_mode(CompositeAlphaMode::PreMultiplied)
+            .alpha_mode(CompositeAlphaMode::Auto)
             .build()
         {
             Ok(pixels) => pixels,
