@@ -382,7 +382,12 @@ impl ApplicationHandler for App {
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
-            .alpha_mode(CompositeAlphaMode::Auto)
+            // Metal PostMultiplied transparency, use PreMultiplied elsewhere
+            .alpha_mode(if cfg!(target_os = "macos") {
+                CompositeAlphaMode::PostMultiplied
+            } else {
+                CompositeAlphaMode::PreMultiplied
+            })
             .build()
         {
             Ok(pixels) => pixels,
