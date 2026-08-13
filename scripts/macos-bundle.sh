@@ -3,8 +3,7 @@ set -euo pipefail
 
 # Wraps a binary/example in a minimal .app bundle with NSAudioCaptureUsageDescription
 # and launches it via `open`, so macOS attributes the system-audio-capture TCC request
-# to the bundle instead of to the terminal (which lacks that Info.plist key and gets
-# silently refused).
+# to the bundle instead of to the terminal (which can fail to request the perms it needs and silently fail)
 #
 # Usage:
 #   scripts/macos-bundle.sh <name> [--example] [-- <args...>]
