@@ -321,6 +321,10 @@ impl App {
         self.fullscreen = !self.fullscreen;
         let fullscreen = self.fullscreen.then(|| Fullscreen::Borderless(None));
         window.set_fullscreen(fullscreen);
+        // restore AlwaysOnTop after exiting fullscreen
+        if !self.fullscreen {
+            window.set_window_level(WindowLevel::AlwaysOnTop);
+        }
     }
 
     fn update_cursor_hittest(&self) {
@@ -382,7 +386,12 @@ impl ApplicationHandler for App {
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
-            .alpha_mode(CompositeAlphaMode::PreMultiplied)
+            // Metal PostMultiplied transparency, use PreMultiplied elsewhere
+            .alpha_mode(if cfg!(target_os = "macos") {
+                CompositeAlphaMode::PostMultiplied
+            } else {
+                CompositeAlphaMode::PreMultiplied
+            })
             .build()
         {
             Ok(pixels) => pixels,
