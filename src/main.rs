@@ -321,6 +321,10 @@ impl App {
         self.fullscreen = !self.fullscreen;
         let fullscreen = self.fullscreen.then(|| Fullscreen::Borderless(None));
         window.set_fullscreen(fullscreen);
+        // restore AlwaysOnTop after exiting fullscreen
+        if !self.fullscreen {
+            window.set_window_level(WindowLevel::AlwaysOnTop);
+        }
     }
 
     fn update_cursor_hittest(&self) {
